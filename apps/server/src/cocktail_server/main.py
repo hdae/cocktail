@@ -9,10 +9,12 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from cocktail_server.api.chat import router as chat_router
 from cocktail_server.api.generate import router as generate_router
 from cocktail_server.api.health import router as health_router
 from cocktail_server.api.images import make_images_router
 from cocktail_server.config import get_settings
+from cocktail_server.services.conversation_store import ConversationStore
 from cocktail_server.services.image_gen import ImageGenService
 from cocktail_server.services.llm import LlmService
 from cocktail_server.services.model_manager import ModelManager
@@ -29,6 +31,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     llm = LlmService(settings.llm_model_id)
     image_gen = ImageGenService(settings.image_model_id)
     manager = ModelManager()
+    conversations = ConversationStore()
 
     async def _evict_llm() -> None:
         llm.unload()
@@ -45,6 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.model_manager = manager
     app.state.llm = llm
     app.state.image_gen = image_gen
+    app.state.conversations = conversations
 
     logger.info("Cocktail server ready (host=%s port=%d)", settings.host, settings.port)
     try:
@@ -68,6 +72,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(generate_router)
+    app.include_router(chat_router)
     app.include_router(make_images_router(settings.images_dir))
     return app
 
