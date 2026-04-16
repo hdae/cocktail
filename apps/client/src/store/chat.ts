@@ -23,6 +23,7 @@ interface PendingToolCall {
 
 interface PendingAssistant {
   messageId: string;
+  reasoning: string;
   toolCalls: Record<string, PendingToolCall>;
   images: ImagePart[];
 }
@@ -101,7 +102,20 @@ function applyEvent(ev: SseEvent): void {
       return;
     case "assistant_start":
       setState({
-        pending: { messageId: ev.message_id, toolCalls: {}, images: [] },
+        pending: {
+          messageId: ev.message_id,
+          reasoning: "",
+          toolCalls: {},
+          images: [],
+        },
+      });
+      return;
+    case "text_delta":
+      setState((s) => {
+        if (!s.pending) return {};
+        return {
+          pending: { ...s.pending, reasoning: s.pending.reasoning + ev.delta },
+        };
       });
       return;
     case "tool_call_start":
@@ -180,6 +194,9 @@ export function pendingAsMessage(
 ): Message | null {
   if (!conversationId || !pending) return null;
   const parts: ContentPart[] = [];
+  if (pending.reasoning) {
+    parts.push({ type: "text", text: pending.reasoning });
+  }
   for (const tc of Object.values(pending.toolCalls)) {
     parts.push({
       type: "tool_call",
@@ -193,7 +210,8 @@ export function pendingAsMessage(
     parts.push(img);
   }
   if (parts.length === 0) {
-    parts.push({ type: "text", text: "考え中..." });
+    // reasoning も tool_call もまだ来ていない瞬間の placeholder
+    parts.push({ type: "text", text: "…" });
   }
   return {
     id: pending.messageId,

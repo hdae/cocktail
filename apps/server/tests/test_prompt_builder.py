@@ -27,7 +27,6 @@ def test_system_prompt_prefers_gelbooru() -> None:
 
 def test_system_prompt_restricts_underscores_to_score_tags() -> None:
     p = build_system_prompt()
-    # スコア以外は underscore 禁止の表現がある
     assert "underscore" in p.lower()
     assert "score_7" in p
 
@@ -42,15 +41,75 @@ def test_system_prompt_enumerates_all_safety_tags() -> None:
         assert f'"{tag}"' in p
 
 
-def test_system_prompt_requests_json_only() -> None:
+def test_system_prompt_requests_turnspec_json() -> None:
     p = build_system_prompt()
+    assert "LlmTurnSpec" in p
+    assert "reasoning" in p
+    assert "tool_calls" in p
     assert "JSON" in p
-    assert "positive" in p
-    assert "negative" in p
-    assert "rationale" in p
+
+
+def test_system_prompt_describes_aspect_ratio_presets() -> None:
+    p = build_system_prompt()
+    for label in ("portrait", "landscape", "square"):
+        assert label in p
+    assert "896" in p
+    assert "1152" in p
+    assert "1024" in p
+
+
+def test_system_prompt_describes_cfg_presets() -> None:
+    p = build_system_prompt()
+    for label in ("soft", "standard", "crisp"):
+        assert label in p
+    # cfg の代表値
+    assert "3.5" in p
+    assert "4.0" in p
+    assert "4.5" in p
+
+
+def test_system_prompt_describes_seed_semantics() -> None:
+    p = build_system_prompt()
+    assert "seed" in p.lower()
+
+
+def test_system_prompt_instructs_reasoning_in_japanese() -> None:
+    p = build_system_prompt()
+    assert "Japanese" in p
+    assert "reasoning" in p
 
 
 def test_user_message_embeds_instruction_verbatim() -> None:
     msg = build_user_message("ピンクの髪の猫耳少女が星空の下で微笑んでいる絵")
     assert "ピンクの髪の猫耳少女が星空の下で微笑んでいる絵" in msg
     assert "JSON" in msg
+
+
+def test_system_prompt_honors_nsfw_intent() -> None:
+    p = build_system_prompt()
+    # NSFW 要求を黙って safe に落とすことを禁止する文言が残っていること
+    assert "HONOR THE USER'S INTENT" in p
+    assert "silently downgrade" in p.lower()
+    # 日本語の NSFW キュー語が列挙されている
+    assert "裸" in p
+    assert "ヌード" in p
+
+
+def test_system_prompt_allows_additive_negative() -> None:
+    p = build_system_prompt()
+    # ベース固定 + 追加可能方式に移行したことを保証
+    assert "ALWAYS START the negative with this base" in p
+    assert "append scene-specific negatives" in p
+    assert "censored" in p  # NSFW 用の追加例が残っている
+    # ベース文字列自体は維持されている
+    assert '"worst quality, low quality, score_1, score_2, score_3, artist name"' in p
+
+
+def test_system_prompt_avoids_draw_verb_for_assistant() -> None:
+    p = build_system_prompt()
+    # 公開時の炎上回避: Gemma 自身の行為は「生成」と言う。「描く」は不可
+    assert "生成する" in p
+    assert "描く / 描きます" in p  # 禁止例として列挙されている
+    # Example の reasoning も「生成しますね」に差し替わっている
+    assert "生成しますね" in p
+    assert "描きますね" not in p

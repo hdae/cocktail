@@ -221,7 +221,7 @@ requires-dist = [
     { name = "accelerate", specifier = ">=1.0" },
     { name = "bitsandbytes", specifier = ">=0.43" },
     { name = "diffusers", specifier = ">=0.36" },
-    { name = "diffusers-anima", git = "https://github.com/hdae/diffusers-anima.git?rev=a5d015b94a368b95e98e6c2aed56c432db24e98c" },
+    { name = "diffusers-anima", git = "https://github.com/hdae/diffusers-anima.git?rev=1a59c55a377d0430b2fecc7f4d1ec7887d41a42a" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pillow", specifier = ">=10.4" },
@@ -338,7 +338,7 @@ wheels = [
 [[package]]
 name = "diffusers-anima"
 version = "0.1.0"
-source = { git = "https://github.com/hdae/diffusers-anima.git?rev=a5d015b94a368b95e98e6c2aed56c432db24e98c#a5d015b94a368b95e98e6c2aed56c432db24e98c" }
+source = { git = "https://github.com/hdae/diffusers-anima.git?rev=1a59c55a377d0430b2fecc7f4d1ec7887d41a42a#1a59c55a377d0430b2fecc7f4d1ec7887d41a42a" }
 dependencies = [
     { name = "accelerate" },
     { name = "diffusers" },

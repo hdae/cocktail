@@ -1,28 +1,40 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 from cocktail_server.config import get_settings
 from cocktail_server.main import create_app
-from cocktail_server.schemas.generate import PromptSpec
+from cocktail_server.schemas.generate import GenerateImageCall, LlmTurnSpec
+from cocktail_server.schemas.messages import Message
+from cocktail_server.services.llm import LlmStreamChunk, LlmTurnComplete
+from cocktail_server.services.prompt_builder import NEGATIVE_DEFAULT
 from fastapi.testclient import TestClient
 from PIL import Image as PILImage
 
 
 class FakeLlm:
-    async def build_anima_prompt(self, instruction_ja: str) -> PromptSpec:
-        return PromptSpec(
-            positive=(
-                "score_7, masterpiece, best quality, safe, newest, 1girl, "
-                "cat ears, pink hair, starry sky, smile, "
-                "a smiling cat-eared girl under a starry sky."
-            ),
-            negative="worst quality, low quality, score_1, score_2, score_3, artist name",
-            rationale="fake rationale",
+    async def run_turn(self, history: list[Message]) -> AsyncIterator[LlmStreamChunk]:
+        spec = LlmTurnSpec(
+            reasoning="テスト応答",
+            tool_calls=[
+                GenerateImageCall(
+                    name="generate_image",
+                    positive=(
+                        "score_7, masterpiece, best quality, safe, newest, 1girl, "
+                        "cat ears, pink hair, starry sky, smile, "
+                        "a smiling cat-eared girl under a starry sky."
+                    ),
+                    negative=NEGATIVE_DEFAULT,
+                    aspect_ratio="portrait",
+                    cfg_preset="standard",
+                    rationale="fake rationale",
+                )
+            ],
         )
+        yield LlmTurnComplete(spec=spec)
 
     def unload(self) -> None:
         return None
@@ -44,7 +56,6 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
 
     app = create_app()
     with TestClient(app) as c:
-        # lifespan 初期化後に、実モデルを呼ばない fake に差し替える
         app.state.llm = FakeLlm()
         app.state.image_gen = FakeImageGen()
         yield c
@@ -70,17 +81,17 @@ def test_generate_returns_expected_shape(client: TestClient, tmp_path: Path) -> 
 
     data = r.json()
     assert data["prompt"].startswith("score_7, masterpiece, best quality, safe,")
-    assert data["negative_prompt"] == (
-        "worst quality, low quality, score_1, score_2, score_3, artist name"
-    )
+    assert data["negative_prompt"] == NEGATIVE_DEFAULT
     assert data["image_url"].startswith("/images/")
     assert data["image_url"].endswith(".webp")
+    # aspect_ratio=portrait → 896x1152 が初期値
     assert data["params"]["width"] == 896
     assert data["params"]["height"] == 1152
     assert data["params"]["steps"] == 32
     assert data["params"]["cfg"] == 4.0
+    # seed は未指定時サーバがランダム割当するので int で入っている
+    assert isinstance(data["params"]["seed"], int)
 
-    # webp が実際に保存されていて、GET で取れること
     image_id = data["image_id"]
     r2 = client.get(f"/images/{image_id}.webp")
     assert r2.status_code == 200

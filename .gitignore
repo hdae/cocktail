@@ -22,6 +22,10 @@ dist/
 # Data: モデル重み・生成画像はリポに含めない
 data/
 
+# モデル重み（Civitai マージ版などの単体ファイル）
+*.safetensors
+*.ckpt
+
 # IDE / OS
 .vscode/
 .idea/

@@ -15,7 +15,7 @@ dependencies = [
     "bitsandbytes>=0.43",
     "diffusers>=0.36",
     # hdae/diffusers-anima は個人リポのため破壊的変更回避のためコミット固定
-    "diffusers-anima @ git+https://github.com/hdae/diffusers-anima.git@a5d015b94a368b95e98e6c2aed56c432db24e98c",
+    "diffusers-anima @ git+https://github.com/hdae/diffusers-anima.git@1a59c55a377d0430b2fecc7f4d1ec7887d41a42a",
     "httpx>=0.27",
     "sentencepiece>=0.2",
     "protobuf>=5",

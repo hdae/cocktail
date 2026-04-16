@@ -29,6 +29,14 @@ export const AssistantStartEventSchema = z
   })
   .strict();
 
+export const TextDeltaEventSchema = z
+  .object({
+    type: z.literal("text_delta"),
+    message_id: z.string(),
+    delta: z.string(),
+  })
+  .strict();
+
 export const ToolCallStartEventSchema = z
   .object({
     type: z.literal("tool_call_start"),
@@ -85,6 +93,7 @@ export const SseEventSchema = z.discriminatedUnion("type", [
   ConversationEventSchema,
   UserSavedEventSchema,
   AssistantStartEventSchema,
+  TextDeltaEventSchema,
   ToolCallStartEventSchema,
   ToolCallEndEventSchema,
   ImageReadyEventSchema,
@@ -97,6 +106,7 @@ export type SseEvent = z.infer<typeof SseEventSchema>;
 export type ConversationEvent = z.infer<typeof ConversationEventSchema>;
 export type UserSavedEvent = z.infer<typeof UserSavedEventSchema>;
 export type AssistantStartEvent = z.infer<typeof AssistantStartEventSchema>;
+export type TextDeltaEvent = z.infer<typeof TextDeltaEventSchema>;
 export type ToolCallStartEvent = z.infer<typeof ToolCallStartEventSchema>;
 export type ToolCallEndEvent = z.infer<typeof ToolCallEndEventSchema>;
 export type ImageReadyEvent = z.infer<typeof ImageReadyEventSchema>;

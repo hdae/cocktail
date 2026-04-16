@@ -34,6 +34,16 @@ class AssistantStartEvent(BaseModel):
     message_id: str
 
 
+class TextDeltaEvent(BaseModel):
+    """アシスタントの自然言語テキストのストリーム差分。`message_id` に向けて連結する。"""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    type: Literal["text_delta"] = "text_delta"
+    message_id: str
+    delta: str
+
+
 class ToolCallStartEvent(BaseModel):
     """ツール呼び出しの開始。UI はスピナーと args を即時表示する。"""
 
@@ -102,6 +112,7 @@ SseEvent = Annotated[
     ConversationEvent
     | UserSavedEvent
     | AssistantStartEvent
+    | TextDeltaEvent
     | ToolCallStartEvent
     | ToolCallEndEvent
     | ImageReadyEvent
