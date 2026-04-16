@@ -1,0 +1,54 @@
+import { useMemo } from "react";
+
+import { pendingAsMessage, useChatStore } from "../store/chat";
+import { ComposerInput } from "./ComposerInput";
+import { MessageList } from "./MessageList";
+
+export function ChatView(): JSX.Element {
+  const {
+    conversationId,
+    messages,
+    pending,
+    status,
+    error,
+    sendMessage,
+    reset,
+  } = useChatStore();
+
+  const pendingMessage = useMemo(
+    () => pendingAsMessage(conversationId, pending),
+    [conversationId, pending],
+  );
+
+  return (
+    <div className="flex h-full flex-col">
+      <header className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
+        <h1 className="text-sm font-semibold text-neutral-200">Cocktail</h1>
+        <div className="flex items-center gap-3 text-xs text-neutral-500">
+          {conversationId && (
+            <span className="font-mono">{conversationId.slice(0, 8)}</span>
+          )}
+          <button
+            type="button"
+            onClick={reset}
+            className="rounded-md border border-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-900"
+          >
+            新しい会話
+          </button>
+        </div>
+      </header>
+      <MessageList messages={messages} pending={pendingMessage} />
+      {error && (
+        <div className="border-t border-red-800 bg-red-950/40 px-4 py-2 text-xs text-red-200">
+          {error}
+        </div>
+      )}
+      <ComposerInput
+        disabled={status === "streaming"}
+        onSend={(parts) => {
+          void sendMessage(parts);
+        }}
+      />
+    </div>
+  );
+}
