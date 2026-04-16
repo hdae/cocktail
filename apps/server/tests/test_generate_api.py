@@ -75,8 +75,8 @@ def test_generate_returns_expected_shape(client: TestClient, tmp_path: Path) -> 
     )
     assert data["image_url"].startswith("/images/")
     assert data["image_url"].endswith(".webp")
-    assert data["params"]["width"] == 1024
-    assert data["params"]["height"] == 1024
+    assert data["params"]["width"] == 896
+    assert data["params"]["height"] == 1152
     assert data["params"]["steps"] == 32
     assert data["params"]["cfg"] == 4.0
 

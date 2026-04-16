@@ -30,10 +30,16 @@ class ImageGenService:
         logger.info("Loading Anima pipeline: %s", self._model_id)
         from diffusers_anima import AnimaPipeline
 
-        pipe = AnimaPipeline.from_pretrained(
-            self._model_id,
-            torch_dtype=torch.bfloat16,
-        )
+        if self._model_id.endswith((".safetensors", ".ckpt")):
+            pipe = AnimaPipeline.from_single_file(
+                self._model_id,
+                torch_dtype=torch.bfloat16,
+            )
+        else:
+            pipe = AnimaPipeline.from_pretrained(
+                self._model_id,
+                torch_dtype=torch.bfloat16,
+            )
         pipe.to("cuda")
         self._pipe = pipe
 

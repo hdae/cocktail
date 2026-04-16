@@ -28,8 +28,8 @@ class Settings(BaseSettings):
     llm_model_id: str = "google/gemma-4-E4B-it"
     image_model_id: str = "hdae/diffusers-anima-preview"
 
-    default_width: int = Field(default=1024, ge=256, le=2048)
-    default_height: int = Field(default=1024, ge=256, le=2048)
+    default_width: int = Field(default=896, ge=256, le=2048)
+    default_height: int = Field(default=1152, ge=256, le=2048)
     default_steps: int = Field(default=32, ge=1, le=100)
     default_cfg: float = Field(default=4.0, ge=0.0, le=20.0)
 

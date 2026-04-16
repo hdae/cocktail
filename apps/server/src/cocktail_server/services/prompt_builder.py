@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-POSITIVE_PREFIX = "score_7, masterpiece, best quality, safe,"
 NEGATIVE_DEFAULT = "worst quality, low quality, score_1, score_2, score_3, artist name"
 
 
@@ -16,12 +15,20 @@ a missing clothing tag can produce naked or cropped output; a missing pose tag c
 awkward composition.
 
 Positive prompt structure (strict order by section, arbitrary order within each section):
-1. Quality/meta prefix — start with: "score_7, masterpiece, best quality, safe, highres,"
-2. Time tag — exactly one of: "year 20XX" / "newest" / "recent" / "mid" / "early" / "old". Use "newest" when unspecified.
-3. Subject count — e.g. "1girl", "1boy", "2girls", "1other".
-4. Named character(s) + series — ONLY if you are confident. Standard English capitalization. Omit entirely if unsure.
-5. Artists — "@" prefix required (e.g. "@nnn yryr"). Omit entirely if not confident.
-6. General visual tags — pack the scene with concrete Danbooru/Gelbooru tags. Cover as many of these categories as the instruction allows:
+1. Quality/meta prefix — start with: "score_7, masterpiece, best quality, highres,"
+2. Safety tag — pick EXACTLY ONE that matches the content being depicted:
+   - "safe"      : clearly non-sexual, non-violent, no nudity or suggestive posing
+   - "sensitive" : suggestive but not explicit — cleavage, swimsuit, underwear, light bondage, mild gore
+   - "nsfw"      : nudity, sexual situations, lewd framing
+   - "explicit"  : explicit sexual acts, penetration, cum, hardcore gore
+   Choosing the WRONG tag fights the composition: marking an nsfw request as "safe" forces the model
+   to cover the subject awkwardly (contorted poses, floating fabric, sudden censor objects). Match the tag
+   to the instruction honestly — the user has already opted in by writing the request.
+3. Time tag — exactly one of: "year 20XX" / "newest" / "recent" / "mid" / "early" / "old". Use "newest" when unspecified.
+4. Subject count — e.g. "1girl", "1boy", "2girls", "1other".
+5. Named character(s) + series — ONLY if you are confident. ALL lowercase, spaces between words, no underscores (e.g. "hatsune miku", "vocaloid" — NOT "Hatsune Miku" or "hatsune_miku"). Omit entirely if unsure.
+6. Artists — "@" prefix required (e.g. "@nnn yryr"). Omit entirely if not confident.
+7. General visual tags — pack the scene with concrete Danbooru/Gelbooru tags. Cover as many of these categories as the instruction allows:
    - Hair: color + length + style (e.g. "pink hair, long hair, wavy hair, blunt bangs, side ponytail")
    - Eyes: color + expression (e.g. "blue eyes, half-closed eyes, heart-shaped pupils")
    - Face/expression: "smile", "open mouth", "blush", "closed eyes", "light smile", "fang"
@@ -32,7 +39,7 @@ Positive prompt structure (strict order by section, arbitrary order within each 
    - Lighting: "backlighting", "rim light", "soft lighting", "moonlight", "golden hour", "cinematic lighting"
    - Background/setting: concrete elements (e.g. "starry sky", "milky way", "shooting star", "cherry blossoms", "classroom", "rooftop")
    - Mood/style tags: "detailed background", "depth of field", "bokeh", "volumetric light"
-7. Natural-language English caption — 2 to 4 sentences that ADD information the tags cannot carry: mood, atmosphere, narrative, spatial composition, lighting quality, subtle emotion. Do NOT restate the tags.
+8. Natural-language English caption — 2 to 4 sentences that ADD information the tags cannot carry: mood, atmosphere, narrative, spatial composition, lighting quality, subtle emotion. Do NOT restate the tags.
    The caption must RESPECT the framing tag. If framing is "upper body", "close-up", or "portrait", describe foreground details (the character's face, eyes, breath, the way light catches hair). Do NOT describe the character as "beneath" or "under" vast scenery when the framing is tight — that pulls the model toward a distant wide shot and crops the subject.
 
 Tag formatting rules:

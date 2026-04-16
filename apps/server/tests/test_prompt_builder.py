@@ -1,13 +1,8 @@
 from cocktail_server.services.prompt_builder import (
     NEGATIVE_DEFAULT,
-    POSITIVE_PREFIX,
     build_system_prompt,
     build_user_message,
 )
-
-
-def test_positive_prefix_is_the_official_one() -> None:
-    assert POSITIVE_PREFIX == "score_7, masterpiece, best quality, safe,"
 
 
 def test_negative_default_matches_official() -> None:
@@ -39,6 +34,12 @@ def test_system_prompt_restricts_underscores_to_score_tags() -> None:
 
 def test_system_prompt_forbids_realism() -> None:
     assert "realism" in build_system_prompt().lower()
+
+
+def test_system_prompt_enumerates_all_safety_tags() -> None:
+    p = build_system_prompt()
+    for tag in ("safe", "sensitive", "nsfw", "explicit"):
+        assert f'"{tag}"' in p
 
 
 def test_system_prompt_requests_json_only() -> None:
