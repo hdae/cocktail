@@ -85,21 +85,21 @@ def test_user_message_embeds_instruction_verbatim() -> None:
     assert "JSON" in msg
 
 
-def test_system_prompt_honors_nsfw_intent() -> None:
+def test_system_prompt_respects_user_situation() -> None:
     p = build_system_prompt()
-    # NSFW 要求を黙って safe に落とすことを禁止する文言が残っていること
-    assert "HONOR THE USER'S INTENT" in p
+    # ユーザーの要求したシチュエーションを忠実に守るメタ指示が残っていること
+    assert "RESPECT THE USER'S SITUATION" in p
     assert "silently downgrade" in p.lower()
-    # 日本語の NSFW キュー語が列挙されている
-    assert "裸" in p
+    # ヌード要求は黙って服を着せるなと明記されている（語彙羅列は避け、ヌード程度に留める）
     assert "ヌード" in p
+    assert "nude" in p.lower()
 
 
 def test_system_prompt_allows_additive_negative() -> None:
     p = build_system_prompt()
-    # ベース固定 + 追加可能方式に移行したことを保証
-    assert "ALWAYS START the negative with this base" in p
-    assert "append scene-specific negatives" in p
+    # ベース固定 + 追加可能方式
+    assert "Always start with this base" in p
+    assert "append" in p.lower()
     assert "censored" in p  # NSFW 用の追加例が残っている
     # ベース文字列自体は維持されている
     assert '"worst quality, low quality, score_1, score_2, score_3, artist name"' in p
