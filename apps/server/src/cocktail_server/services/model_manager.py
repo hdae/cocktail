@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from time import perf_counter_ns
 from typing import Literal
 
 from cocktail_server.schemas.health import ModelStatus
+
+logger = logging.getLogger(__name__)
 
 Role = Literal["llm", "image"]
 Policy = Literal["swap", "coresident"]
@@ -52,15 +56,28 @@ class ModelManager:
     @asynccontextmanager
     async def acquire(self, role: Role) -> AsyncIterator[None]:
         self._queue_depth += 1
+        wait_start = perf_counter_ns()
         try:
             await self._gpu_lock.acquire()
         finally:
             self._queue_depth -= 1
+        wait_ms = (perf_counter_ns() - wait_start) / 1_000_000
         try:
-            if self._policy == "swap" and self._active is not None and self._active != role:
-                evictor = self._evictors.get(self._active)
+            evict_ms = 0.0
+            prev_active = self._active
+            if self._policy == "swap" and prev_active is not None and prev_active != role:
+                evictor = self._evictors.get(prev_active)
                 if evictor is not None:
+                    evict_start = perf_counter_ns()
                     await evictor()
+                    evict_ms = (perf_counter_ns() - evict_start) / 1_000_000
+                    logger.info(
+                        "swap %s->%s: evict=%.0f ms, wait=%.0f ms",
+                        prev_active,
+                        role,
+                        evict_ms,
+                        wait_ms,
+                    )
             self._active = role
             yield
         finally:

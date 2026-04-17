@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Thread
+from time import perf_counter_ns
 from typing import Any, Final
 
 import torch
@@ -290,14 +291,25 @@ class LlmService:
             bnb_4bit_use_double_quant=True,
             bnb_4bit_quant_type="nf4",
         )
+        t0 = perf_counter_ns()
         self._tokenizer = AutoTokenizer.from_pretrained(self._model_id)
+        t1 = perf_counter_ns()
         self._model = AutoModelForCausalLM.from_pretrained(
             self._model_id,
             quantization_config=quant_config,
             torch_dtype=torch.bfloat16,
             device_map={"": 0},
         )
+        t2 = perf_counter_ns()
         self._try_enable_vision()
+        t3 = perf_counter_ns()
+        logger.info(
+            "load llm: tokenizer=%.0f ms, from_pretrained=%.0f ms, vision_probe=%.0f ms, total=%.0f ms",
+            (t1 - t0) / 1_000_000,
+            (t2 - t1) / 1_000_000,
+            (t3 - t2) / 1_000_000,
+            (t3 - t0) / 1_000_000,
+        )
 
     def _try_enable_vision(self) -> None:
         """AutoProcessor をロードし、1×1 ダミー画像で forward を通すまで検証する。
@@ -357,6 +369,7 @@ class LlmService:
         if self._model is None:
             return
         logger.info("Unloading Gemma model")
+        t0 = perf_counter_ns()
         del self._model
         del self._tokenizer
         if self._processor is not None:
@@ -366,8 +379,16 @@ class LlmService:
         self._processor = None
         self._vision_available = False
         gc.collect()
+        t1 = perf_counter_ns()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        t2 = perf_counter_ns()
+        logger.info(
+            "unload llm: del=%.0f ms, empty_cache=%.0f ms, total=%.0f ms",
+            (t1 - t0) / 1_000_000,
+            (t2 - t1) / 1_000_000,
+            (t2 - t0) / 1_000_000,
+        )
 
     async def run_turn(self, history: list[Message]) -> AsyncIterator[LlmStreamChunk]:
         """1 ターン分の応答を生成。`reasoning` を `LlmTextDelta` で逐次流し、最後に `LlmTurnComplete`。

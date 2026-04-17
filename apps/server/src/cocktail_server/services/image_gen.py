@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import logging
+from time import perf_counter_ns
 from typing import Any
 
 import torch
@@ -36,6 +37,7 @@ class ImageGenService:
         logger.info("Loading Anima pipeline: %s", self._model_id)
         from diffusers_anima import AnimaPipeline
 
+        t0 = perf_counter_ns()
         if self._model_id.endswith((".safetensors", ".ckpt")):
             pipe = AnimaPipeline.from_single_file(
                 self._model_id,
@@ -46,18 +48,35 @@ class ImageGenService:
                 self._model_id,
                 torch_dtype=torch.bfloat16,
             )
+        t1 = perf_counter_ns()
         pipe.to("cuda")
+        t2 = perf_counter_ns()
         self._pipe = pipe
+        logger.info(
+            "load image: from_pretrained=%.0f ms, to_cuda=%.0f ms, total=%.0f ms",
+            (t1 - t0) / 1_000_000,
+            (t2 - t1) / 1_000_000,
+            (t2 - t0) / 1_000_000,
+        )
 
     def unload(self) -> None:
         if self._pipe is None:
             return
         logger.info("Unloading Anima pipeline")
+        t0 = perf_counter_ns()
         del self._pipe
         self._pipe = None
         gc.collect()
+        t1 = perf_counter_ns()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        t2 = perf_counter_ns()
+        logger.info(
+            "unload image: del=%.0f ms, empty_cache=%.0f ms, total=%.0f ms",
+            (t1 - t0) / 1_000_000,
+            (t2 - t1) / 1_000_000,
+            (t2 - t0) / 1_000_000,
+        )
 
     async def generate(
         self,
