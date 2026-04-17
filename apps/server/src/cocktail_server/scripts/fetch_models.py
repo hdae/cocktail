@@ -4,11 +4,11 @@
 
 処理方針:
 - LLM: HuggingFace リポ ID のみサポート。`snapshot_download` で取得（既存キャッシュがあれば即座に返る）。
-- Image: 次のいずれか。
-  1. `settings.image_model_id` が `xxx/yyy` 形式 → HF リポ ID として `snapshot_download`
-  2. `settings.image_model_id` が明示ローカルパス（`.safetensors` / `.ckpt`）→ 存在確認のみ
-  3. `settings.image_model_id` 未設定 **かつ** `settings.image_model_air` あり → AIR(URN) を
-     Civitai API で解決して `{weights_dir}/civitai/{slug}-{sha256[:12]}.{ext}` に配置
+- Image: `settings.image_model_id` を値のプレフィックスで振り分ける。
+  1. `urn:air:...` で始まる → AIR(URN) を Civitai API で解決し
+     `{weights_dir}/civitai/{slug}-{sha256[:12]}.{ext}` に配置
+  2. `xxx/yyy` 形式 → HF リポ ID として `snapshot_download`
+  3. 上記以外（`.safetensors` / `.ckpt` 等の明示ローカルパス）→ 存在確認のみ
 
 Civitai AIR(URN) 例:
     urn:air:anima:checkpoint:civitai:2544636@2859702
@@ -261,24 +261,23 @@ def _ensure_llm(settings: Settings) -> None:
 def _ensure_image(settings: Settings) -> Path | None:
     from huggingface_hub import snapshot_download
 
-    if settings.image_model_id:
-        value = settings.image_model_id
-        if _looks_like_hf_repo(value):
-            logger.info("ensuring image snapshot: %s", value)
-            local = snapshot_download(repo_id=value, cache_dir=str(settings.hf_home))
-            return Path(local)
-        path = Path(value).expanduser()
-        if not path.exists():
-            raise FetchError(f"IMAGE_MODEL_ID に指定されたローカルパスが存在しません: {path}")
-        return path
+    value = settings.image_model_id
+    if not value:
+        raise FetchError("IMAGE_MODEL_ID が設定されていません。")
 
-    if settings.image_model_air:
-        air = parse_air(settings.image_model_air)
+    if value.startswith("urn:air:"):
+        air = parse_air(value)
         return _resolve_civitai(air, settings)
 
-    raise FetchError(
-        "IMAGE_MODEL_ID も IMAGE_MODEL_AIR も設定されていません。どちらか一方を指定してください。"
-    )
+    if _looks_like_hf_repo(value):
+        logger.info("ensuring image snapshot: %s", value)
+        local = snapshot_download(repo_id=value, cache_dir=str(settings.hf_home))
+        return Path(local)
+
+    path = Path(value).expanduser()
+    if not path.exists():
+        raise FetchError(f"IMAGE_MODEL_ID に指定されたローカルパスが存在しません: {path}")
+    return path
 
 
 def ensure_all(settings: Settings) -> Path | None:

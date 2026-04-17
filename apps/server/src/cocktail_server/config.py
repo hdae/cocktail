@@ -27,10 +27,11 @@ class Settings(BaseSettings):
     weights_dir: Path = Path("./data/weights")
 
     llm_model_id: str = "google/gemma-4-E4B-it"
-    # 未設定なら image_model_air を解決して取得する。
-    image_model_id: str | None = None
-    # Civitai の AIR(URN)。デフォルトは wai-anima v10。
-    image_model_air: str | None = "urn:air:anima:checkpoint:civitai:2544636@2859702"
+    # 画像モデルの指定。次のいずれかを受け付ける:
+    #   - Civitai AIR(URN): urn:air:... （デフォルト、wai-anima v10）
+    #   - HuggingFace リポ ID: xxx/yyy
+    #   - 明示ローカルパス: /path/to/model.safetensors
+    image_model_id: str = "urn:air:anima:checkpoint:civitai:2544636@2859702"
     # Civitai の gated モデル用トークン。
     civitai_token: str | None = None
 

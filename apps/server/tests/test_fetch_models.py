@@ -27,8 +27,7 @@ def _settings(tmp_path: Path) -> Settings:
         images_dir=tmp_path / "images",
         weights_dir=tmp_path / "weights",
         llm_model_id="google/gemma-4-E4B-it",
-        image_model_id=None,
-        image_model_air="urn:air:anima:checkpoint:civitai:2544636@2859702",
+        image_model_id="urn:air:anima:checkpoint:civitai:2544636@2859702",
         civitai_token=None,
     )
 
@@ -217,9 +216,7 @@ def test_ensure_all_raises_on_sha_mismatch(tmp_path: Path, monkeypatch: pytest.M
     assert not tmp_dir.exists() or not any(tmp_dir.iterdir())
 
 
-def test_ensure_all_prefers_image_model_id_local_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_ensure_all_accepts_local_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(tmp_path)
     local = tmp_path / "custom.safetensors"
     local.write_bytes(b"payload")

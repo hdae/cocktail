@@ -35,10 +35,10 @@ pnpm dev
 起動時の挙動:
 
 1. `LLM_MODEL_ID` の HF リポを `snapshot_download` で取得
-2. `IMAGE_MODEL_ID` / `IMAGE_MODEL_AIR` に従って Image モデルを取得
-   - HF リポ ID なら `snapshot_download`
-   - ローカルパスなら存在確認のみ
-   - AIR(URN) なら Civitai API で解決し `${WEIGHTS_DIR}/civitai/{slug}-{sha256[:12]}.{ext}` に配置
+2. `IMAGE_MODEL_ID` に従って Image モデルを取得
+   - `urn:air:...` なら Civitai API で解決し `${WEIGHTS_DIR}/civitai/{slug}-{sha256[:12]}.{ext}` に配置
+   - HF リポ ID(`xxx/yyy`) なら `snapshot_download`
+   - それ以外（明示ローカルパス）なら存在確認のみ
 3. VRAM を検出して `residency_policy` を `swap` / `coresident` に決定
 4. LLM をプリロード（coresident なら Image もプリロード）
 5. リクエスト受付開始
@@ -70,7 +70,7 @@ pnpm clean       # 各種キャッシュを削除
 
 - 起動時に OOM で落ちる: `.env` で `RESIDENCY_MODE=swap` を明示する
 - Civitai の gated モデルで 403: `.env` に `CIVITAI_TOKEN=...` を設定する
-- sha256 不一致で起動中断: Civitai 側でファイルが差し替わった可能性。`IMAGE_MODEL_AIR` のバージョン ID を最新に更新する
+- sha256 不一致で起動中断: Civitai 側でファイルが差し替わった可能性。`IMAGE_MODEL_ID`(AIR) のバージョン ID を最新に更新する
 
 ## ライセンスに関する注意
 
