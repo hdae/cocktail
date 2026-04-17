@@ -133,7 +133,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         manager.set_status("llm", "idle")
 
     async def _evict_image() -> None:
-        image_gen.unload()
+        # swap モードでは CPU 退避で再活性化を高速化する（from_pretrained を再実行しない）
+        await asyncio.to_thread(image_gen.evict_to_cpu)
         manager.set_status("image", "idle")
 
     manager.register_evictor("llm", _evict_llm)
