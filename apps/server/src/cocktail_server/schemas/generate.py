@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 AspectRatio = Literal["portrait", "landscape", "square"]
 CfgPreset = Literal["soft", "standard", "crisp"]
+SeedAction = Literal["new", "keep"]
 
 ASPECT_RATIO_RESOLUTIONS: dict[AspectRatio, tuple[int, int]] = {
     "portrait": (896, 1152),
@@ -33,8 +34,9 @@ class PromptSpec(BaseModel):
 class GenerateImageCall(BaseModel):
     """Gemma が選ぶ `generate_image` ツール呼び出し。
 
-    `aspect_ratio` と `cfg_preset` はプリセット指定、`seed` は未指定（None）時に
-    サーバ側でランダム生成する。ステップ数は固定（Gemma は選べない）。
+    `aspect_ratio` と `cfg_preset` はプリセット指定。seed 値は Gemma に扱わせず、
+    `seed_action` ("new"=採番し直す / "keep"=前回と同じ seed を維持) の意図だけ
+    選ばせる。実際の seed 値はサーバが `seed_resolver.resolve_seed` で決める。
     """
 
     model_config = ConfigDict(strict=True, extra="forbid")
@@ -44,7 +46,7 @@ class GenerateImageCall(BaseModel):
     negative: str = Field(min_length=1)
     aspect_ratio: AspectRatio = "portrait"
     cfg_preset: CfgPreset = "standard"
-    seed: int | None = Field(default=None, ge=0, le=2**63 - 1)
+    seed_action: SeedAction = "new"
     rationale: str = ""
 
 

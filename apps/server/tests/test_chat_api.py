@@ -32,6 +32,7 @@ def _make_spec(
                 negative=NEGATIVE_DEFAULT,
                 aspect_ratio="portrait",
                 cfg_preset="standard",
+                seed_action="new",
                 rationale="fake rationale",
             )
         ]
@@ -368,6 +369,7 @@ def test_chat_landscape_aspect_ratio_resolves_to_correct_size(
         negative=NEGATIVE_DEFAULT,
         aspect_ratio="landscape",
         cfg_preset="crisp",
+        seed_action="new",
         rationale="wide shot",
     )
     with TestClient(app) as c:

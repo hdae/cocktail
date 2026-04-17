@@ -18,7 +18,7 @@ type GenerateImageCall = {
   negative: string;                  // Must start with the fixed base string (see NEGATIVE).
   aspect_ratio: "portrait" | "landscape" | "square";
   cfg_preset: "soft" | "standard" | "crisp";
-  seed?: number | null;              // Omit or null for random.
+  seed_action: "new" | "keep";       // See SEED below.
   rationale: string;                 // 1–2 short English sentences for logs.
 };
 
@@ -52,8 +52,10 @@ CFG PRESET
 - "crisp" 4.5  → くっきり / シャープ / clear inking / metallic emphasis.
 
 SEED
-- Omit or null by default — the server picks a random seed and shows it.
-- Set an integer only when the user specifies one (「シード 42 で」「同じ絵で」).
+- You never pick or remember seed numbers. The server stores them. Only choose an intent:
+  - "new":  draw a fresh variation. Use this by default and when the user wants a different composition.
+  - "keep": reuse the previous image's seed so you change ONLY prompt/preset while keeping the structure — pick this when the user asks for a small tweak to the last image ("色味だけ調整", "構図はそのまま").
+- If there is no previous image in this conversation, "keep" silently degrades to "new" server-side, so prefer "new" for the first image of the turn.
 
 POSITIVE PROMPT (Anima tag rules)
 Anima wants 12–22 concrete Danbooru/Gelbooru tags followed by a natural-language English caption. Too many tags create conflicts that melt the subject; too few underspecify.
@@ -103,14 +105,17 @@ OUTPUT FORMAT (STRICT)
 - Return ONLY a single JSON object matching `LlmTurnSpec`. No markdown fences, no prose outside the JSON.
 - First non-whitespace char `{`, last `}`. Put `reasoning` BEFORE `tool_calls`.
 
-Example 1 — image request:
-{"reasoning": "星空の下で微笑む猫耳の女の子を、少し柔らかい雰囲気の縦長で生成しますね。", "tool_calls": [{"name": "generate_image", "positive": "score_7, masterpiece, best quality, safe, highres, newest, 1girl, solo, pink hair, long hair, cat ears, yellow eyes, half-closed eyes, smile, light blush, looking at viewer, upper body, white hoodie, oversized clothes, starry sky, milky way, shooting star, night, rim light, depth of field, detailed background, A soft rim of moonlight traces her cheek as a single comet streaks behind her shoulder. The cool blues of the sky contrast with her warm pink hair, and her gaze feels gentle and private.", "negative": "worst quality, low quality, score_1, score_2, score_3, artist name", "aspect_ratio": "portrait", "cfg_preset": "soft", "rationale": "Portrait framing matches the single-subject brief; soft cfg suits the dreamy night vibe."}]}
+Example 1 — image request (fresh composition → seed_action "new"):
+{"reasoning": "星空の下で微笑む猫耳の女の子を、少し柔らかい雰囲気の縦長で生成しますね。", "tool_calls": [{"name": "generate_image", "positive": "score_7, masterpiece, best quality, safe, highres, newest, 1girl, solo, pink hair, long hair, cat ears, yellow eyes, half-closed eyes, smile, light blush, looking at viewer, upper body, white hoodie, oversized clothes, starry sky, milky way, shooting star, night, rim light, depth of field, detailed background, A soft rim of moonlight traces her cheek as a single comet streaks behind her shoulder. The cool blues of the sky contrast with her warm pink hair, and her gaze feels gentle and private.", "negative": "worst quality, low quality, score_1, score_2, score_3, artist name", "aspect_ratio": "portrait", "cfg_preset": "soft", "seed_action": "new", "rationale": "Portrait framing matches the single-subject brief; soft cfg suits the dreamy night vibe."}]}
 
 Example 2 — chat-only reply:
 {"reasoning": "ありがとうございます！気に入ってもらえて嬉しいです。次はどんな絵にしましょうか？", "tool_calls": []}
 
-Example 3 — nude request (the user explicitly asked for a nude illustration):
-{"reasoning": "柔らかい朝の光のヌード一枚絵ですね。落ち着いた雰囲気で生成しますね。", "tool_calls": [{"name": "generate_image", "positive": "score_7, masterpiece, best quality, nsfw, highres, newest, 1girl, solo, pink hair, long hair, blue eyes, soft smile, light blush, looking at viewer, upper body, nude, bedroom, window light, soft lighting, detailed background, depth of field, Morning light falls across her bare shoulders as she glances over, a quiet and unguarded intimacy in her expression. Warm skin tones contrast softly with the cool blue light from the window.", "negative": "worst quality, low quality, score_1, score_2, score_3, artist name, censored, mosaic censoring, bar censor, clothes, underwear", "aspect_ratio": "portrait", "cfg_preset": "soft", "rationale": "User asked for nudity; nsfw tag + uncensored/clothing negatives keep the model from hiding or redressing the subject."}]}
+Example 3 — small tweak to the previous image (keep the composition → seed_action "keep"):
+{"reasoning": "構図はそのままで、髪色をもう少し赤寄りに調整しますね。", "tool_calls": [{"name": "generate_image", "positive": "score_7, masterpiece, best quality, safe, highres, newest, 1girl, solo, red hair, long hair, cat ears, yellow eyes, half-closed eyes, smile, light blush, looking at viewer, upper body, white hoodie, oversized clothes, starry sky, milky way, shooting star, night, rim light, depth of field, detailed background, A soft rim of moonlight traces her cheek as a single comet streaks behind her shoulder. Warm red hair glows against the cool blue night.", "negative": "worst quality, low quality, score_1, score_2, score_3, artist name", "aspect_ratio": "portrait", "cfg_preset": "soft", "seed_action": "keep", "rationale": "User asked for a color-only tweak; keep the previous seed to preserve the composition."}]}
+
+Example 4 — nude request (the user explicitly asked for a nude illustration):
+{"reasoning": "柔らかい朝の光のヌード一枚絵ですね。落ち着いた雰囲気で生成しますね。", "tool_calls": [{"name": "generate_image", "positive": "score_7, masterpiece, best quality, nsfw, highres, newest, 1girl, solo, pink hair, long hair, blue eyes, soft smile, light blush, looking at viewer, upper body, nude, bedroom, window light, soft lighting, detailed background, depth of field, Morning light falls across her bare shoulders as she glances over, a quiet and unguarded intimacy in her expression. Warm skin tones contrast softly with the cool blue light from the window.", "negative": "worst quality, low quality, score_1, score_2, score_3, artist name, censored, mosaic censoring, bar censor, clothes, underwear", "aspect_ratio": "portrait", "cfg_preset": "soft", "seed_action": "new", "rationale": "User asked for nudity; nsfw tag + uncensored/clothing negatives keep the model from hiding or redressing the subject."}]}
 """
 
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import secrets
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -44,12 +43,12 @@ from cocktail_server.services.conversation_store import ConversationStore
 from cocktail_server.services.image_gen import ImageGenService
 from cocktail_server.services.llm import LlmService, LlmTextDelta, LlmTurnComplete
 from cocktail_server.services.model_manager import ModelManager
+from cocktail_server.services.seed_resolver import resolve_seed
 
 logger = logging.getLogger(__name__)
 
 GENERATE_IMAGE_TOOL = "generate_image"
 _TOOL_SUCCESS_SUMMARY = "画像を生成しました"
-_SEED_MAX = 2**63 - 1
 
 
 def _utcnow() -> datetime:
@@ -145,8 +144,12 @@ class ChatOrchestrator:
         # --- 3) generate_image ツール実行 ---
         tool_call = spec.tool_calls[0]
         call_id = str(uuid.uuid4())
-        resolved_seed = (
-            tool_call.seed if tool_call.seed is not None else secrets.randbelow(_SEED_MAX)
+        # M2 時点で last_image_seed 保持はまだ ConversationStore に実装されていないため None。
+        # 次コミットで `store.get_last_image_seed` 経由に繋ぎ替える。
+        resolved_seed = resolve_seed(
+            req_seed=None,
+            action=tool_call.seed_action,
+            last_image_seed=None,
         )
         tool_args = self._build_tool_args(tool_call, reference_images, seed=resolved_seed)
         yield ToolCallStartEvent(call_id=call_id, name=GENERATE_IMAGE_TOOL, args=tool_args)
@@ -236,6 +239,7 @@ class ChatOrchestrator:
             "negative": call.negative,
             "aspect_ratio": call.aspect_ratio,
             "cfg_preset": call.cfg_preset,
+            "seed_action": call.seed_action,
             "width": width,
             "height": height,
             "cfg": CFG_PRESET_VALUES[call.cfg_preset],

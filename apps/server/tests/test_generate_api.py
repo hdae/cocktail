@@ -30,6 +30,7 @@ class FakeLlm:
                     negative=NEGATIVE_DEFAULT,
                     aspect_ratio="portrait",
                     cfg_preset="standard",
+                    seed_action="new",
                     rationale="fake rationale",
                 )
             ],
@@ -118,3 +119,13 @@ def test_generate_rejects_missing_image_id() -> None:
 def test_generate_rejects_empty_instruction(client: TestClient) -> None:
     r = client.post("/generate", json={"instruction_ja": ""})
     assert r.status_code == 422
+
+
+def test_generate_honors_explicit_req_seed_override(client: TestClient) -> None:
+    """`POST /generate` の dev 用 `seed` 指定は seed_action を飛び越えて採用される。"""
+    r = client.post(
+        "/generate",
+        json={"instruction_ja": "テスト指定 seed", "seed": 999},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["params"]["seed"] == 999

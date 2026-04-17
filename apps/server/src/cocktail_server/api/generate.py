@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import secrets
 import time
 import uuid
 from datetime import UTC, datetime
@@ -21,12 +20,11 @@ from cocktail_server.schemas.generate import (
 )
 from cocktail_server.schemas.messages import Message, TextPart
 from cocktail_server.services.llm import LlmTurnComplete
+from cocktail_server.services.seed_resolver import resolve_seed
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-_SEED_MAX = 2**63 - 1
 
 
 def _save_webp(img: Image, images_dir: Path) -> str:
@@ -89,12 +87,9 @@ async def generate(req: GenerateRequest, request: Request) -> GenerateResponse:
     height = req.height if req.height is not None else preset_height
     steps = req.steps if req.steps is not None else settings.default_steps
     cfg = req.cfg if req.cfg is not None else CFG_PRESET_VALUES[call.cfg_preset]
-    if req.seed is not None:
-        seed: int = req.seed
-    elif call.seed is not None:
-        seed = call.seed
-    else:
-        seed = secrets.randbelow(_SEED_MAX)
+    # `/generate` は会話を持たないので last_image_seed は常に None
+    # （`seed_action="keep"` を指定されたら内部で新規採番に縮退する）
+    seed = resolve_seed(req_seed=req.seed, action=call.seed_action, last_image_seed=None)
 
     manager.set_status("image", "loading")
     try:
