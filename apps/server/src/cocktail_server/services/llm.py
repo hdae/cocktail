@@ -14,12 +14,19 @@ from typing import Any, Final
 
 import torch
 from PIL import Image as PILImage
+from torchao.quantization import Int4WeightOnlyConfig  # type: ignore[import-untyped]
+from torchao.quantization.quantize_.workflows.int4.int4_choose_qparams_algorithm import (  # type: ignore[import-untyped]
+    Int4ChooseQParamsAlgorithm,
+)
+from torchao.quantization.quantize_.workflows.int4.int4_packing_format import (  # type: ignore[import-untyped]
+    Int4PackingFormat,
+)
 from transformers import (
     AutoModelForCausalLM,
     AutoProcessor,
     AutoTokenizer,
-    BitsAndBytesConfig,
     TextIteratorStreamer,
+    TorchAoConfig,
 )
 
 from cocktail_server.schemas.generate import LlmTurnSpec
@@ -273,43 +280,57 @@ class LlmService:
         self._tokenizer: Any = None
         self._processor: Any = None
         self._vision_available: bool = False
+        self._on_cuda: bool = False
 
     def is_loaded(self) -> bool:
-        return self._model is not None
+        return self._model is not None and self._on_cuda
 
     @property
     def vision_available(self) -> bool:
         return self._vision_available
 
     def load(self) -> None:
-        if self._model is not None:
+        """モデルを GPU に載せる。初回は bf16 ロード + on-the-fly torchao 量子化、
+        2 回目以降は CPU→CUDA 転送のみ。"""
+        if self._model is not None and self._on_cuda:
             return
-        logger.info("Loading Gemma model: %s", self._model_id)
-        quant_config = BitsAndBytesConfig(  # type: ignore[no-untyped-call]
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
-        )
+        if self._model is None:
+            logger.info("Loading Gemma model: %s", self._model_id)
+            # torchao int4 は tensor subclass 方式で `.to()` 互換。bnb と違って
+            # CPU ↔ CUDA の往復が安定するため、swap 用途に向く。
+            quant_config = TorchAoConfig(
+                quant_type=Int4WeightOnlyConfig(
+                    group_size=128,
+                    int4_packing_format=Int4PackingFormat.TILE_PACKED_TO_4D,
+                    int4_choose_qparams_algorithm=Int4ChooseQParamsAlgorithm.TINYGEMM,
+                ),
+            )
+            t0 = perf_counter_ns()
+            self._tokenizer = AutoTokenizer.from_pretrained(self._model_id)
+            t1 = perf_counter_ns()
+            self._model = AutoModelForCausalLM.from_pretrained(
+                self._model_id,
+                quantization_config=quant_config,
+                torch_dtype=torch.bfloat16,
+                device_map={"": 0},
+            )
+            t2 = perf_counter_ns()
+            self._on_cuda = True
+            self._try_enable_vision()
+            t3 = perf_counter_ns()
+            logger.info(
+                "load llm (cold): tokenizer=%.0f ms, from_pretrained=%.0f ms, vision_probe=%.0f ms, total=%.0f ms",
+                (t1 - t0) / 1_000_000,
+                (t2 - t1) / 1_000_000,
+                (t3 - t2) / 1_000_000,
+                (t3 - t0) / 1_000_000,
+            )
+            return
         t0 = perf_counter_ns()
-        self._tokenizer = AutoTokenizer.from_pretrained(self._model_id)
+        self._model.to("cuda")
         t1 = perf_counter_ns()
-        self._model = AutoModelForCausalLM.from_pretrained(
-            self._model_id,
-            quantization_config=quant_config,
-            torch_dtype=torch.bfloat16,
-            device_map={"": 0},
-        )
-        t2 = perf_counter_ns()
-        self._try_enable_vision()
-        t3 = perf_counter_ns()
-        logger.info(
-            "load llm: tokenizer=%.0f ms, from_pretrained=%.0f ms, vision_probe=%.0f ms, total=%.0f ms",
-            (t1 - t0) / 1_000_000,
-            (t2 - t1) / 1_000_000,
-            (t3 - t2) / 1_000_000,
-            (t3 - t0) / 1_000_000,
-        )
+        self._on_cuda = True
+        logger.info("load llm (warm): to_cuda=%.0f ms", (t1 - t0) / 1_000_000)
 
     def _try_enable_vision(self) -> None:
         """AutoProcessor をロードし、1×1 ダミー画像で forward を通すまで検証する。
@@ -364,8 +385,31 @@ class LlmService:
                 pad_token_id=self._tokenizer.eos_token_id,
             )
 
+    def evict_to_cpu(self) -> None:
+        """モデルを CPU RAM に退避させ、VRAM を解放する。torchao int4 の tensor subclass は
+        `.to("cpu")` が安全に動く（bnb と違いカーネル再初期化が要らない）。"""
+        if self._model is None or not self._on_cuda:
+            return
+        logger.info("Evicting Gemma model to CPU")
+        t0 = perf_counter_ns()
+        self._model.to("cpu")
+        t1 = perf_counter_ns()
+        gc.collect()
+        t2 = perf_counter_ns()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        t3 = perf_counter_ns()
+        self._on_cuda = False
+        logger.info(
+            "evict llm: to_cpu=%.0f ms, gc=%.0f ms, empty_cache=%.0f ms, total=%.0f ms",
+            (t1 - t0) / 1_000_000,
+            (t2 - t1) / 1_000_000,
+            (t3 - t2) / 1_000_000,
+            (t3 - t0) / 1_000_000,
+        )
+
     def unload(self) -> None:
-        # bnb 4bit は .to("cpu") で安定しないため、退避は完全アンロード
+        """モデルを完全破棄する。プロセス終了時・障害復旧用。"""
         if self._model is None:
             return
         logger.info("Unloading Gemma model")
@@ -378,6 +422,7 @@ class LlmService:
         self._tokenizer = None
         self._processor = None
         self._vision_available = False
+        self._on_cuda = False
         gc.collect()
         t1 = perf_counter_ns()
         if torch.cuda.is_available():
@@ -399,7 +444,7 @@ class LlmService:
         失敗時は温度 0.3 でリプレイ（同期、text_delta は流さない）。ただし attempt 0 で
         ユーザに見えたテキストは `spec.reasoning` に上書きして整合を取る。
         """
-        if self._model is None or self._tokenizer is None:
+        if not self._on_cuda or self._model is None or self._tokenizer is None:
             await asyncio.to_thread(self.load)
 
         streamed_reasoning = ""

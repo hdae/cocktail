@@ -13,6 +13,7 @@ dependencies = [
     "transformers>=4.51",
     "accelerate>=1.0",
     "bitsandbytes>=0.43",
+    "torchao>=0.15",
     "diffusers>=0.36",
     # hdae/diffusers-anima は個人リポのため破壊的変更回避のためコミット固定
     "diffusers-anima @ git+https://github.com/hdae/diffusers-anima.git@1a59c55a377d0430b2fecc7f4d1ec7887d41a42a",

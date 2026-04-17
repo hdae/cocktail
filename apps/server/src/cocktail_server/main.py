@@ -129,7 +129,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     conversations = ConversationStore()
 
     async def _evict_llm() -> None:
-        llm.unload()
+        # swap モードでは CPU 退避で再活性化を高速化する（再量子化を再実行しない）
+        await asyncio.to_thread(llm.evict_to_cpu)
         manager.set_status("llm", "idle")
 
     async def _evict_image() -> None:
