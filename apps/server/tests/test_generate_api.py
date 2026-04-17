@@ -52,6 +52,8 @@ class FakeImageGen:
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setenv("IMAGES_DIR", str(tmp_path / "images"))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "models"))
+    monkeypatch.setenv("WEIGHTS_DIR", str(tmp_path / "weights"))
+    monkeypatch.setenv("STARTUP_PRELOAD", "false")
     get_settings.cache_clear()
 
     app = create_app()

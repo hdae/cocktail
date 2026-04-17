@@ -178,9 +178,7 @@ def _build_chat_messages(history: list[Message]) -> list[dict[str, str]]:
                 content = user_body
             messages.append({"role": "user", "content": content})
         elif msg.role == "assistant":
-            messages.append(
-                {"role": "assistant", "content": _reconstruct_assistant_spec(msg)}
-            )
+            messages.append({"role": "assistant", "content": _reconstruct_assistant_spec(msg)})
         # tool / system ロールのメッセージは現状発行していないので無視
     return messages
 

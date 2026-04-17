@@ -24,9 +24,22 @@ class Settings(BaseSettings):
 
     hf_home: Path = Path("./data/models")
     images_dir: Path = Path("./data/images")
+    weights_dir: Path = Path("./data/weights")
 
     llm_model_id: str = "google/gemma-4-E4B-it"
-    image_model_id: str = "hdae/diffusers-anima-preview"
+    # 未設定なら image_model_air を解決して取得する。
+    image_model_id: str | None = None
+    # Civitai の AIR(URN)。デフォルトは wai-anima v10。
+    image_model_air: str | None = "urn:air:anima:checkpoint:civitai:2544636@2859702"
+    # Civitai の gated モデル用トークン。
+    civitai_token: str | None = None
+
+    # VRAM 運用モード: 24GB+ のカードでは coresident に自動切替するのが狙い。
+    residency_mode: Literal["auto", "swap", "coresident"] = "auto"
+    residency_coresident_threshold_gb: float = Field(default=20.0, ge=0.0)
+
+    # 起動時にモデル取得＋プリロードまで走らせるか（テストでは false にする）。
+    startup_preload: bool = True
 
     default_width: int = Field(default=896, ge=256, le=2048)
     default_height: int = Field(default=1152, ge=256, le=2048)
@@ -36,6 +49,7 @@ class Settings(BaseSettings):
     def ensure_dirs(self) -> None:
         self.hf_home.mkdir(parents=True, exist_ok=True)
         self.images_dir.mkdir(parents=True, exist_ok=True)
+        self.weights_dir.mkdir(parents=True, exist_ok=True)
 
 
 @lru_cache(maxsize=1)

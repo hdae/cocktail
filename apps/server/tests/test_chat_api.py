@@ -86,6 +86,8 @@ class FakeImageGen:
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setenv("IMAGES_DIR", str(tmp_path / "images"))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "models"))
+    monkeypatch.setenv("WEIGHTS_DIR", str(tmp_path / "weights"))
+    monkeypatch.setenv("STARTUP_PRELOAD", "false")
     get_settings.cache_clear()
 
     app = create_app()
@@ -271,12 +273,12 @@ def test_chat_without_tool_call_emits_text_only(
     """Gemma が `tool_calls=[]` で返したら、画像生成をスキップして text のみで閉じる。"""
     monkeypatch.setenv("IMAGES_DIR", str(tmp_path / "images"))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "models"))
+    monkeypatch.setenv("WEIGHTS_DIR", str(tmp_path / "weights"))
+    monkeypatch.setenv("STARTUP_PRELOAD", "false")
     get_settings.cache_clear()
     app = create_app()
     with TestClient(app) as c:
-        app.state.llm = FakeLlm(
-            spec=_make_spec(reasoning="ありがとうございます！", tool_calls=[])
-        )
+        app.state.llm = FakeLlm(spec=_make_spec(reasoning="ありがとうございます！", tool_calls=[]))
         app.state.image_gen = FakeImageGen()
         r = c.post("/chat", json={"parts": [{"type": "text", "text": "ありがとう"}]})
     get_settings.cache_clear()
@@ -303,6 +305,8 @@ def test_chat_second_turn_receives_previous_conversation(
     """2 ターン目の Gemma 呼び出しは、過去のユーザ発話と assistant ターンを含む履歴を受け取る。"""
     monkeypatch.setenv("IMAGES_DIR", str(tmp_path / "images"))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "models"))
+    monkeypatch.setenv("WEIGHTS_DIR", str(tmp_path / "weights"))
+    monkeypatch.setenv("STARTUP_PRELOAD", "false")
     get_settings.cache_clear()
     app = create_app()
     fake_llm = FakeLlm()
@@ -335,11 +339,15 @@ def test_chat_second_turn_receives_previous_conversation(
     second_history = fake_llm.received_histories[1]
     assert [m.role for m in second_history] == ["user", "assistant", "user"]
     first_user_text = "".join(
-        p.text for p in second_history[0].parts if p.type == "text"  # type: ignore[union-attr]
+        p.text
+        for p in second_history[0].parts
+        if p.type == "text"  # type: ignore[union-attr]
     )
     assert "初音ミク" in first_user_text
     latest_user_text = "".join(
-        p.text for p in second_history[-1].parts if p.type == "text"  # type: ignore[union-attr]
+        p.text
+        for p in second_history[-1].parts
+        if p.type == "text"  # type: ignore[union-attr]
     )
     assert "もっと笑顔に" in latest_user_text
 
@@ -350,6 +358,8 @@ def test_chat_landscape_aspect_ratio_resolves_to_correct_size(
     """Gemma が landscape を選んだら tool_call_start.args.width/height が 1152x896 になる。"""
     monkeypatch.setenv("IMAGES_DIR", str(tmp_path / "images"))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "models"))
+    monkeypatch.setenv("WEIGHTS_DIR", str(tmp_path / "weights"))
+    monkeypatch.setenv("STARTUP_PRELOAD", "false")
     get_settings.cache_clear()
     app = create_app()
     landscape_call = GenerateImageCall(

@@ -83,3 +83,48 @@ def test_status_snapshot_is_a_copy() -> None:
     snap = mgr.snapshot_status()
     snap["llm"] = "error"
     assert mgr.snapshot_status()["llm"] == "loaded"
+
+
+def test_default_policy_is_swap() -> None:
+    assert ModelManager().policy == "swap"
+
+
+@pytest.mark.asyncio
+async def test_coresident_policy_skips_evictor_on_role_change() -> None:
+    mgr = ModelManager(policy="coresident")
+    evicted: list[str] = []
+
+    async def evict_llm() -> None:
+        evicted.append("llm")
+
+    async def evict_image() -> None:
+        evicted.append("image")
+
+    mgr.register_evictor("llm", evict_llm)
+    mgr.register_evictor("image", evict_image)
+
+    async with mgr.acquire("llm"):
+        pass
+    async with mgr.acquire("image"):
+        pass
+    async with mgr.acquire("llm"):
+        pass
+
+    assert evicted == []
+    assert mgr.active == "llm"
+
+
+@pytest.mark.asyncio
+async def test_swap_policy_still_evicts() -> None:
+    mgr = ModelManager(policy="swap")
+    evicted: list[str] = []
+
+    async def evict_llm() -> None:
+        evicted.append("llm")
+
+    mgr.register_evictor("llm", evict_llm)
+    async with mgr.acquire("llm"):
+        pass
+    async with mgr.acquire("image"):
+        pass
+    assert evicted == ["llm"]
