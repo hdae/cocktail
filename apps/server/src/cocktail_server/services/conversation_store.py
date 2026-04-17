@@ -4,12 +4,33 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from cocktail_server.schemas.conversations import ConversationSummary
 from cocktail_server.schemas.images import GeneratedImageRef
-from cocktail_server.schemas.messages import Message
+from cocktail_server.schemas.messages import Message, TextPart
+
+
+_TITLE_MAX = 40
+_TITLE_FALLBACK = "(新規会話)"
 
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _derive_title(messages: list[Message]) -> str:
+    """最初のユーザテキストパート先頭 40 文字を会話タイトルとして返す。無ければフォールバック。"""
+    for message in messages:
+        if message.role != "user":
+            continue
+        for part in message.parts:
+            if isinstance(part, TextPart):
+                text = part.text.strip()
+                if not text:
+                    continue
+                if len(text) > _TITLE_MAX:
+                    return text[:_TITLE_MAX] + "…"
+                return text
+    return _TITLE_FALLBACK
 
 
 @dataclass
@@ -107,6 +128,26 @@ class ConversationStore:
         if session is None:
             return None
         return session.last_image_seed
+
+    async def list_conversations(self) -> list[ConversationSummary]:
+        """全会話の軽量サマリを `updated_at` 降順で返す。左メニューの履歴一覧向け。
+
+        `title` は最初のユーザメッセージの最初のテキストパート先頭 40 文字。
+        テキスト系ユーザ発話が無い会話は "(新規会話)"。
+        """
+        summaries: list[ConversationSummary] = []
+        for session in self._sessions.values():
+            summaries.append(
+                ConversationSummary(
+                    id=session.id,
+                    title=_derive_title(session.messages),
+                    created_at=session.created_at,
+                    updated_at=session.updated_at,
+                    message_count=len(session.messages),
+                )
+            )
+        summaries.sort(key=lambda s: s.updated_at, reverse=True)
+        return summaries
 
     async def list_all_generated_images(
         self, *, limit: int, before: datetime | None = None

@@ -9,6 +9,7 @@ import {
 import { AppShell } from "./components/AppShell";
 import { ChatView } from "./components/ChatView";
 import { GalleryView } from "./components/GalleryView";
+import { HistoryView } from "./components/HistoryView";
 import { getConversation } from "./lib/api";
 import { useChatStore } from "./store/chat";
 
@@ -59,11 +60,18 @@ const galleryRoute = createRoute({
   component: () => <GalleryView />,
 });
 
+const historyRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/history",
+  component: () => <HistoryView />,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   newConversationRoute,
   existingConversationRoute,
   galleryRoute,
+  historyRoute,
 ]);
 
 export const router = createRouter({ routeTree });

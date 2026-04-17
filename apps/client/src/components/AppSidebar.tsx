@@ -1,5 +1,5 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { ImageIcon, MessageSquarePlus } from "lucide-react";
+import { History, ImageIcon, MessageSquarePlus } from "lucide-react";
 
 import {
   Sidebar,
@@ -19,7 +19,13 @@ type NavItem = {
   matchPrefix?: string;
 };
 
-const NAV_ITEMS: readonly NavItem[] = [
+/**
+ * チャット履歴を左メニューに出すかの切替。
+ * 共有モードでは有効、個人利用モードでは隠す想定。
+ */
+const SHOW_CHAT_HISTORY = import.meta.env.VITE_SHOW_CHAT_HISTORY === "true";
+
+const BASE_NAV_ITEMS: readonly NavItem[] = [
   {
     label: "新規チャット",
     to: "/conversations/new",
@@ -32,6 +38,16 @@ const NAV_ITEMS: readonly NavItem[] = [
     icon: ImageIcon,
   },
 ];
+
+const HISTORY_NAV_ITEM: NavItem = {
+  label: "チャット履歴",
+  to: "/history",
+  icon: History,
+};
+
+const NAV_ITEMS: readonly NavItem[] = SHOW_CHAT_HISTORY
+  ? [...BASE_NAV_ITEMS, HISTORY_NAV_ITEM]
+  : BASE_NAV_ITEMS;
 
 export function AppSidebar(): JSX.Element {
   const pathname = useRouterState({ select: (s) => s.location.pathname });

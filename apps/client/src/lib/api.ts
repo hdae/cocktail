@@ -1,11 +1,17 @@
+import { z } from "zod";
+
 import {
   type ConversationDetail,
   ConversationDetailSchema,
+  type ConversationSummary,
+  ConversationSummarySchema,
   type GeneratedImageList,
   GeneratedImageListSchema,
   type ImageUploadResponse,
   ImageUploadResponseSchema,
 } from "@cocktail/api-types";
+
+const ConversationSummaryListSchema = z.array(ConversationSummarySchema);
 
 /** `POST /images` で 1 枚アップロードし、`image_id` を受け取る。 */
 export async function uploadImage(file: File): Promise<ImageUploadResponse> {
@@ -35,6 +41,17 @@ export async function listGeneratedImages(
   }
   const json: unknown = await res.json();
   return GeneratedImageListSchema.parse(json);
+}
+
+/** `GET /conversations` で会話サマリ一覧（`updated_at` 降順）を取得する。 */
+export async function listConversations(): Promise<ConversationSummary[]> {
+  const res = await fetch("/conversations", { cache: "no-store" });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`List conversations failed (${res.status}): ${body}`);
+  }
+  const json: unknown = await res.json();
+  return ConversationSummaryListSchema.parse(json);
 }
 
 /** `GET /conversations/{id}` で会話 1 件の詳細（messages + 生成画像メタ）を取得する。 */
