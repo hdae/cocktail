@@ -80,15 +80,17 @@ def test_images_dir_with_prior_assistant_image_attaches_pil(tmp_path: Path) -> N
     history = [_user("初回", mid="u1"), _assistant_with_image(image_id), _user("調整", mid="u2")]
     messages = _build_chat_messages(history, images_dir=images_dir)
 
-    # 最終 user メッセージだけ list-content になっているはず
+    # 最終 user メッセージは image + text の list-content
     assert isinstance(messages[-1]["content"], list)
     parts = messages[-1]["content"]
     assert len(parts) == 2
     assert parts[0]["type"] == "image"
     assert isinstance(parts[0]["image"], PILImage.Image)
     assert parts[1]["type"] == "text"
-    # 過去 user は string のまま
-    assert isinstance(messages[0]["content"], str)
+    # 画像を添付するターンは processor 経路に乗るため、過去メッセージも
+    # 全て list-content 形式に統一される（apply_chat_template が混在を許さない）
+    assert all(isinstance(m["content"], list) for m in messages)
+    assert messages[0]["content"][0]["type"] == "text"
 
 
 def test_images_dir_but_missing_file_falls_back_to_text_only(tmp_path: Path) -> None:

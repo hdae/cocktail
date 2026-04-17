@@ -234,11 +234,16 @@ def _build_chat_messages(
         # tool / system ロールのメッセージは現状発行していないので無視
 
     if prev_image is not None and user_indices:
+        # 画像を添付するときは processor 経路で apply_chat_template が回るため、
+        # 全メッセージを list-content 形式に統一する（string/list 混在を受け付けない）
+        for m in messages:
+            if isinstance(m["content"], str):
+                m["content"] = [{"type": "text", "text": m["content"]}]
         last_idx = user_indices[-1]
-        text_content = messages[last_idx]["content"]
+        parts = messages[last_idx]["content"]
         messages[last_idx]["content"] = [
             {"type": "image", "image": prev_image},
-            {"type": "text", "text": text_content},
+            *parts,
         ]
     return messages
 
@@ -403,13 +408,16 @@ class LlmService:
 
         if self._vision_available and self._processor is not None:
             messages = _build_chat_messages(history, images_dir=self._images_dir)
-            return self._processor.apply_chat_template(
-                messages,
-                tokenize=True,
-                add_generation_prompt=True,
-                return_tensors="pt",
-                return_dict=True,
-            ).to(model.device)
+            # 画像が実際に添付されたときのみ processor 経路。それ以外は tokenizer 経路。
+            has_image = any(isinstance(m["content"], list) for m in messages)
+            if has_image:
+                return self._processor.apply_chat_template(
+                    messages,
+                    tokenize=True,
+                    add_generation_prompt=True,
+                    return_tensors="pt",
+                    return_dict=True,
+                ).to(model.device)
         messages = _build_chat_messages(history)
         return tokenizer.apply_chat_template(
             messages,
