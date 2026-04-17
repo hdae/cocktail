@@ -23,3 +23,15 @@ class ChatRequest(BaseModel):
         if not any(isinstance(p, TextPart) for p in self.parts):
             raise ValueError("parts must contain at least one text part")
         return self
+
+
+class ChatStartResponse(BaseModel):
+    """`POST /chat` の応答。採番した `turn_id` を使って SSE を別接続で購読する。
+
+    `GET /chat/turns/{turn_id}/events` を叩くと、このターンの SSE が流れる。
+    """
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    conversation_id: str
+    turn_id: str

@@ -19,7 +19,7 @@ function useHealth(): FetchState {
 
     const tick = async (): Promise<void> => {
       try {
-        const res = await fetch("/health", { cache: "no-store" });
+        const res = await fetch("/api/health", { cache: "no-store" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json: unknown = await res.json();
         const data = HealthResponseSchema.parse(json);

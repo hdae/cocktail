@@ -24,6 +24,7 @@ from cocktail_server.services.conversation_store import ConversationStore
 from cocktail_server.services.image_gen import ImageGenService
 from cocktail_server.services.llm import LlmService
 from cocktail_server.services.model_manager import ModelManager, Policy
+from cocktail_server.services.turn_registry import TurnRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     image_gen = ImageGenService(settings.image_model_id)
     manager = ModelManager(policy=policy)
     conversations = ConversationStore()
+    turn_registry = TurnRegistry()
 
     async def _evict_llm() -> None:
         # swap モードでは CPU 退避で再活性化を高速化する（再量子化を再実行しない）
@@ -149,6 +151,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.llm = llm
     app.state.image_gen = image_gen
     app.state.conversations = conversations
+    app.state.turn_registry = turn_registry
     app.state.ready_event = ready_event
     app.state.startup_state = initial_state
     app.state.startup_error = None
@@ -170,11 +173,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             preload_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await preload_task
+        await turn_registry.shutdown()
         llm.unload()
         image_gen.unload()
 
 
-_READY_GATED_PATHS: frozenset[str] = frozenset({"/chat", "/generate"})
+_READY_GATED_PATHS: frozenset[str] = frozenset({"/api/chat", "/api/generate"})
+_READY_GATED_PREFIXES: tuple[str, ...] = ("/api/chat/",)
+
+
+def _is_ready_gated(path: str) -> bool:
+    if path in _READY_GATED_PATHS:
+        return True
+    return any(path.startswith(prefix) for prefix in _READY_GATED_PREFIXES)
 
 
 async def _await_ready_middleware(
@@ -183,7 +194,7 @@ async def _await_ready_middleware(
 ) -> Response:
     """`/chat` / `/generate` は preload 完了まで待機させる。タイムアウトで 503 を返す。"""
     path = request.url.path
-    if path in _READY_GATED_PATHS:
+    if _is_ready_gated(path):
         ready_event: asyncio.Event | None = getattr(request.app.state, "ready_event", None)
         if ready_event is not None and not ready_event.is_set():
             try:
@@ -216,11 +227,14 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.include_router(health_router)
-    app.include_router(generate_router)
-    app.include_router(chat_router)
-    app.include_router(conversations_router)
-    app.include_router(make_images_router(settings.images_dir))
+    # API はすべて `/api` 配下に置く。Vite dev server は `/api` のみをプロキシし、
+    # それ以外 (`/conversations/xxx` など) は SPA ルーティング用に index.html を返す
+    # ため、リロード時や直接 URL を踏んだ時も SPA 側が担当する。
+    app.include_router(health_router, prefix="/api")
+    app.include_router(generate_router, prefix="/api")
+    app.include_router(chat_router, prefix="/api")
+    app.include_router(conversations_router, prefix="/api")
+    app.include_router(make_images_router(settings.images_dir), prefix="/api")
     return app
 
 

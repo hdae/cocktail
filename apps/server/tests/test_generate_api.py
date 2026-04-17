@@ -66,7 +66,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
 
 
 def test_health_returns_ok(client: TestClient) -> None:
-    r = client.get("/health")
+    r = client.get("/api/health")
     assert r.status_code == 200
     data = r.json()
     assert data["startup"]["state"] == "ready"
@@ -78,7 +78,7 @@ def test_health_returns_ok(client: TestClient) -> None:
 
 def test_generate_returns_expected_shape(client: TestClient, tmp_path: Path) -> None:
     r = client.post(
-        "/generate",
+        "/api/generate",
         json={"instruction_ja": "ピンクの髪の猫耳少女が星空の下で微笑んでいる絵"},
     )
     assert r.status_code == 200, r.text
@@ -86,7 +86,7 @@ def test_generate_returns_expected_shape(client: TestClient, tmp_path: Path) -> 
     data = r.json()
     assert data["prompt"].startswith("score_7, masterpiece, best quality, safe,")
     assert data["negative_prompt"] == NEGATIVE_DEFAULT
-    assert data["image_url"].startswith("/images/")
+    assert data["image_url"].startswith("/api/images/")
     assert data["image_url"].endswith(".webp")
     # aspect_ratio=portrait → 896x1152 が初期値
     assert data["params"]["width"] == 896
@@ -97,7 +97,7 @@ def test_generate_returns_expected_shape(client: TestClient, tmp_path: Path) -> 
     assert isinstance(data["params"]["seed"], int)
 
     image_id = data["image_id"]
-    r2 = client.get(f"/images/{image_id}.webp")
+    r2 = client.get(f"/api/images/{image_id}.webp")
     assert r2.status_code == 200
     assert r2.headers["content-type"] == "image/webp"
 
@@ -105,26 +105,26 @@ def test_generate_returns_expected_shape(client: TestClient, tmp_path: Path) -> 
 def test_generate_rejects_bad_image_id() -> None:
     app = create_app()
     with TestClient(app) as c:
-        r = c.get("/images/not-a-uuid.webp")
+        r = c.get("/api/images/not-a-uuid.webp")
         assert r.status_code == 400
 
 
 def test_generate_rejects_missing_image_id() -> None:
     app = create_app()
     with TestClient(app) as c:
-        r = c.get("/images/00000000-0000-0000-0000-000000000000.webp")
+        r = c.get("/api/images/00000000-0000-0000-0000-000000000000.webp")
         assert r.status_code == 404
 
 
 def test_generate_rejects_empty_instruction(client: TestClient) -> None:
-    r = client.post("/generate", json={"instruction_ja": ""})
+    r = client.post("/api/generate", json={"instruction_ja": ""})
     assert r.status_code == 422
 
 
 def test_generate_honors_explicit_req_seed_override(client: TestClient) -> None:
     """`POST /generate` の dev 用 `seed` 指定は seed_action を飛び越えて採用される。"""
     r = client.post(
-        "/generate",
+        "/api/generate",
         json={"instruction_ja": "テスト指定 seed", "seed": 999},
     )
     assert r.status_code == 200, r.text

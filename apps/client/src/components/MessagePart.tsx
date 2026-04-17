@@ -11,7 +11,7 @@ export function MessagePart({ part }: Props): JSX.Element | null {
     case "text":
       return <p className="whitespace-pre-wrap leading-relaxed">{part.text}</p>;
     case "image": {
-      const src = `/images/${part.image_id}.webp`;
+      const src = `/api/images/${part.image_id}.webp`;
       return (
         <figure className="mt-1 space-y-2">
           <a

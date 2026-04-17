@@ -3,14 +3,13 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from cocktail_server.schemas.conversations import ConversationSummary
 from cocktail_server.schemas.images import GeneratedImageRef
 from cocktail_server.schemas.messages import Message, TextPart
-
 
 _TITLE_MAX = 40
 _TITLE_FALLBACK = "(新規会話)"
@@ -141,14 +140,10 @@ class ConversationStore:
                 queue.put_nowait(ref)
             except asyncio.QueueFull:
                 # 最古を 1 件捨てて入れ直す。それでも失敗する（極端な競合）なら諦める。
-                try:
+                with suppress(asyncio.QueueEmpty):
                     queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
-                try:
+                with suppress(asyncio.QueueFull):
                     queue.put_nowait(ref)
-                except asyncio.QueueFull:
-                    pass
 
     @asynccontextmanager
     async def subscribe_images(self) -> AsyncIterator[asyncio.Queue[GeneratedImageRef]]:
@@ -157,9 +152,7 @@ class ConversationStore:
         購読者ごとに maxsize=32 の `asyncio.Queue` を割り当てる。溢れたら古い方から
         捨てる（ギャラリー用途では最新を見せる方が価値が高い）。
         """
-        queue: asyncio.Queue[GeneratedImageRef] = asyncio.Queue(
-            maxsize=_IMAGE_SUB_QUEUE_MAX
-        )
+        queue: asyncio.Queue[GeneratedImageRef] = asyncio.Queue(maxsize=_IMAGE_SUB_QUEUE_MAX)
         self._image_subscribers.add(queue)
         try:
             yield queue

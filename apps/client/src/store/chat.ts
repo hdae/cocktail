@@ -10,7 +10,8 @@ import type {
   UserContentPart,
 } from "@cocktail/api-types";
 
-import { streamChat } from "../lib/sse";
+import { startChat } from "../lib/api";
+import { subscribeTurn } from "../lib/sse";
 
 type Status = "idle" | "streaming" | "error";
 
@@ -31,6 +32,7 @@ interface PendingAssistant {
 
 interface ChatState {
   conversationId: string | null;
+  turnId: string | null;
   messages: Message[];
   pending: PendingAssistant | null;
   status: Status;
@@ -55,6 +57,7 @@ export const useChatStore = create<ChatState>()(
   persist(
     (set, get) => ({
       conversationId: null,
+      turnId: null,
       messages: [],
       pending: null,
       status: "idle",
@@ -66,6 +69,7 @@ export const useChatStore = create<ChatState>()(
         get().abort?.abort();
         set({
           conversationId: null,
+          turnId: null,
           messages: [],
           pending: null,
           status: "idle",
@@ -78,6 +82,7 @@ export const useChatStore = create<ChatState>()(
         get().abort?.abort();
         set({
           conversationId: id,
+          turnId: null,
           messages,
           pending: null,
           status: "idle",
@@ -123,10 +128,27 @@ export const useChatStore = create<ChatState>()(
           parent_id: null,
         };
 
-        set({ status: "streaming", error: null, abort, pending: null });
+        // POST は同期で短い JSON を返すだけ。SSE 本体は subscribe で拾う。
+        let started;
+        try {
+          started = await startChat(req);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          set({ status: "error", error: msg, abort: null, pending: null });
+          return;
+        }
+
+        set({
+          status: "streaming",
+          error: null,
+          abort,
+          pending: null,
+          conversationId: started.conversation_id,
+          turnId: started.turn_id,
+        });
 
         try {
-          for await (const ev of streamChat(req, abort.signal)) {
+          for await (const ev of subscribeTurn(started.turn_id, abort.signal)) {
             applyEvent(ev);
           }
         } catch (err) {

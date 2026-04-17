@@ -55,7 +55,7 @@ def _normalize_and_save(raw: bytes, images_dir: Path) -> ImageUploadResponse:
 
     return ImageUploadResponse(
         image_id=image_id,
-        image_url=f"/images/{image_id}.webp",
+        image_url=f"/api/images/{image_id}.webp",
         mime="image/webp",
         width=src.width,
         height=src.height,
@@ -82,9 +82,7 @@ def make_images_router(images_dir: Path) -> APIRouter:
                     if await request.is_disconnected():
                         return
                     try:
-                        ref = await asyncio.wait_for(
-                            queue.get(), timeout=_SSE_PING_INTERVAL_S
-                        )
+                        ref = await asyncio.wait_for(queue.get(), timeout=_SSE_PING_INTERVAL_S)
                     except TimeoutError:
                         yield b": ping\n\n"
                         continue

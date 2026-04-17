@@ -118,7 +118,7 @@ async def generate(req: GenerateRequest, request: Request) -> GenerateResponse:
 
     return GenerateResponse(
         image_id=image_id,
-        image_url=f"/images/{image_id}.webp",
+        image_url=f"/api/images/{image_id}.webp",
         prompt=call.positive,
         negative_prompt=call.negative,
         params=GenerateParams(width=width, height=height, steps=steps, cfg=cfg, seed=seed),

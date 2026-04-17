@@ -77,7 +77,9 @@ export function GalleryView(): JSX.Element {
             生成済みの画像はまだありません。
           </div>
         )}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+        {/* 横幅に応じて列数を増やす。極端な横長モニタでも 1 枚 160px 前後を保ち、
+            マス目が大きくなりすぎないように 2xl で 8 列まで段階的に増やす。 */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8">
           {images.map((img) => (
             <button
               key={img.image_id}

@@ -32,17 +32,23 @@ export function ChatView({ conversationId }: Props): JSX.Element {
   }, [conversationId, reset]);
 
   // 未開始チャットで送信 → サーバが UUID を返した瞬間に URL を差し替える。
-  // 草稿も "new" キーから新 UUID へ移し替え、stream 中のリロードに備える。
+  // useEffect + selector だと、/new 画面に入った直後の reset() 反映前に
+  // 古い storeConversationId が閉じ込められて誤 navigate してしまう。
+  // そのため null → 非null の遷移だけに反応する subscribe を使う。
   useEffect(() => {
-    if (conversationId === "new" && storeConversationId !== null) {
-      promoteDraft(storeConversationId);
+    if (conversationId !== "new") return;
+    const unsubscribe = useChatStore.subscribe((state, prevState) => {
+      if (prevState.conversationId !== null) return;
+      if (state.conversationId === null) return;
+      promoteDraft(state.conversationId);
       void navigate({
         to: "/conversations/$conversationId",
-        params: { conversationId: storeConversationId },
+        params: { conversationId: state.conversationId },
         replace: true,
       });
-    }
-  }, [conversationId, storeConversationId, navigate, promoteDraft]);
+    });
+    return unsubscribe;
+  }, [conversationId, navigate, promoteDraft]);
 
   // 既存会話タブ間で直接遷移した際に store が古い場合、loader が新しい id で hydrate 済み
   // なので storeConversationId 側を信頼する。表示上の id はどちらも同じ UUID になるはず。

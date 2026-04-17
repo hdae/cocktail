@@ -16,3 +16,15 @@ export const ChatRequestSchema = z
   );
 
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
+
+/**
+ * `POST /chat` の応答。SSE は別接続 `GET /chat/turns/{turn_id}/events` で購読する。
+ */
+export const ChatStartResponseSchema = z
+  .object({
+    conversation_id: z.string(),
+    turn_id: z.string(),
+  })
+  .strict();
+
+export type ChatStartResponse = z.infer<typeof ChatStartResponseSchema>;

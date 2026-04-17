@@ -90,23 +90,33 @@ class ChatOrchestrator:
         self._store = store
         self._settings = settings
 
-    async def run(self, req: ChatRequest) -> AsyncIterator[SseEvent]:
+    async def resolve_conversation_id(self, req: ChatRequest) -> str | None:
+        """`ChatRequest` から会話 ID を確定する。未知の ID は `None`。
+
+        `POST /chat` は SSE 開始前にこれを同期的に呼び出し、不正 ID なら 404 を返す。
+        """
+        if req.conversation_id is None:
+            return await self._store.create()
+        if not await self._store.exists(req.conversation_id):
+            return None
+        return req.conversation_id
+
+    async def run_stream(self, req: ChatRequest, conversation_id: str) -> AsyncIterator[SseEvent]:
+        """確定済み `conversation_id` に対してターン本体を走らせ、SSE イベントを流す。
+
+        例外は捕まえて `ErrorEvent` に変換し、末尾に必ず `DoneEvent` を送る。
+        `_run_inner` との分離理由は、会話確定を `POST /chat` 側で先に行い、
+        不正 ID を HTTP 404 で返せるようにするため。
+        """
         try:
-            async for event in self._run_inner(req):
+            async for event in self._run_inner(req, conversation_id):
                 yield event
         except Exception as exc:
             logger.exception("Chat orchestration failed")
             yield ErrorEvent(code="internal_error", message=str(exc))
         yield DoneEvent()
 
-    async def _run_inner(self, req: ChatRequest) -> AsyncIterator[SseEvent]:
-        conversation_id = await self._resolve_conversation(req)
-        if conversation_id is None:
-            yield ErrorEvent(
-                code="conversation_not_found",
-                message=f"Unknown conversation_id: {req.conversation_id}",
-            )
-            return
+    async def _run_inner(self, req: ChatRequest, conversation_id: str) -> AsyncIterator[SseEvent]:
         if req.conversation_id is None:
             yield ConversationEvent(conversation_id=conversation_id)
 
@@ -227,13 +237,6 @@ class ChatOrchestrator:
         await self._store.append(conversation_id, assistant_message)
         yield AssistantEndEvent(message=assistant_message)
 
-    async def _resolve_conversation(self, req: ChatRequest) -> str | None:
-        if req.conversation_id is None:
-            return await self._store.create()
-        if not await self._store.exists(req.conversation_id):
-            return None
-        return req.conversation_id
-
     async def _save_user_message(self, conversation_id: str, req: ChatRequest) -> Message:
         parts: list[ContentPart] = []
         for p in req.parts:
@@ -306,7 +309,7 @@ class ChatOrchestrator:
 
         return {
             "image_id": image_id,
-            "image_url": f"/images/{image_id}.webp",
+            "image_url": f"/api/images/{image_id}.webp",
             "prompt": call.positive,
             "negative_prompt": call.negative,
             "aspect_ratio": call.aspect_ratio,

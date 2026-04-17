@@ -17,12 +17,10 @@ export default defineConfig({
     host: "0.0.0.0",
     port: 5173,
     proxy: {
-      // サーバは 8000 で動いている。SSE は WebSocket と違って通常の HTTP なのでそのままプロキシ可能。
-      "/chat": { target: "http://127.0.0.1:8000", changeOrigin: true },
-      "/conversations": { target: "http://127.0.0.1:8000", changeOrigin: true },
-      "/images": { target: "http://127.0.0.1:8000", changeOrigin: true },
-      "/generate": { target: "http://127.0.0.1:8000", changeOrigin: true },
-      "/health": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      // サーバ API はすべて `/api` 配下。ここだけを 8000 にプロキシし、
+      // それ以外 (`/conversations/xxx` などの SPA ルート) は Vite が index.html を
+      // 返すため、リロード / 直接 URL 踏みでも SPA 側が描画を担う。
+      "/api": { target: "http://127.0.0.1:8000", changeOrigin: true },
     },
   },
 });

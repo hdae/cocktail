@@ -1,7 +1,6 @@
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 
 import {
-  type ChatRequest,
   type GeneratedImageRef,
   GeneratedImageRefSchema,
   type SseEvent,
@@ -9,14 +8,16 @@ import {
 } from "@cocktail/api-types";
 
 /**
- * POST /chat を叩いて SSE を受信する。呼び出し側は `for await` で順次受け取れる。
+ * `GET /chat/turns/{turn_id}/events` を購読し、SSE イベントを順次受信する。
  *
- * 本家 `EventSource` は POST も JSON ボディも許さないので、`@microsoft/fetch-event-source`
- * を使う。SSE フレームの `event:` が Zod 判別 union の discriminator と一致しているため
- * `data` の JSON だけでパースしても型が決まる。
+ * ターンは `POST /chat` で先に採番されている前提。POST と SSE を別接続にすることで、
+ * navigate / hydrate で接続が切れても replay で欠落なく再購読できる（retention 内）。
+ *
+ * 本家 `EventSource` は 404 を自動再接続してしまうので `fetchEventSource` を使い、
+ * `onopen` で非 2xx を即 throw する。
  */
-export async function* streamChat(
-  req: ChatRequest,
+export async function* subscribeTurn(
+  turnId: string,
   signal: AbortSignal,
 ): AsyncGenerator<SseEvent> {
   const queue: SseEvent[] = [];
@@ -43,10 +44,9 @@ export async function* streamChat(
     }
   };
 
-  const promise = fetchEventSource("/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(req),
+  const url = `/api/chat/turns/${encodeURIComponent(turnId)}/events`;
+  const promise = fetchEventSource(url, {
+    method: "GET",
     signal,
     openWhenHidden: true,
     onopen: async (res) => {
@@ -118,7 +118,7 @@ export interface ImageEventsOptions {
  */
 export function streamImageEvents(options: ImageEventsOptions): Promise<void> {
   const { onCreate, onOpen, signal } = options;
-  return fetchEventSource("/images/events", {
+  return fetchEventSource("/api/images/events", {
     method: "GET",
     signal,
     openWhenHidden: true,

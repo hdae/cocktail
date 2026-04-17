@@ -46,7 +46,7 @@ def _ref(
 
 
 def test_list_generated_images_empty_returns_empty_list(client: TestClient) -> None:
-    r = client.get("/images")
+    r = client.get("/api/images")
     assert r.status_code == 200, r.text
     data = r.json()
     assert data == {"images": [], "next_before": None}
@@ -71,7 +71,7 @@ async def test_list_generated_images_returns_descending_across_sessions(
             created_at=t0 + timedelta(seconds=5),
         ),
     )
-    r = client.get("/images?limit=10")
+    r = client.get("/api/images?limit=10")
     assert r.status_code == 200
     data = r.json()
     ids = [img["image_id"] for img in data["images"]]
@@ -97,7 +97,7 @@ async def test_list_generated_images_pagination_with_before(client: TestClient) 
             ),
         )
 
-    r = client.get("/images?limit=2")
+    r = client.get("/api/images?limit=2")
     data = r.json()
     assert [img["image_id"] for img in data["images"]] == [
         "00000003-0000-0000-0000-000000000000",
@@ -105,7 +105,7 @@ async def test_list_generated_images_pagination_with_before(client: TestClient) 
     ]
     assert data["next_before"] is not None
 
-    r2 = client.get(f"/images?limit=2&before={data['next_before']}")
+    r2 = client.get(f"/api/images?limit=2&before={data['next_before']}")
     assert r2.status_code == 200
     data2 = r2.json()
     assert [img["image_id"] for img in data2["images"]] == [
@@ -116,7 +116,7 @@ async def test_list_generated_images_pagination_with_before(client: TestClient) 
 
 
 def test_list_generated_images_rejects_invalid_limit(client: TestClient) -> None:
-    r = client.get("/images?limit=0")
+    r = client.get("/api/images?limit=0")
     assert r.status_code == 422
-    r = client.get("/images?limit=500")
+    r = client.get("/api/images?limit=500")
     assert r.status_code == 422

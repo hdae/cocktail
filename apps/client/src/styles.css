@@ -39,7 +39,9 @@ body,
     --sidebar-primary-foreground: 0 0% 9%;
     --sidebar-accent: 0 0% 15%;
     --sidebar-accent-foreground: 0 0% 96%;
-    --sidebar-border: 0 0% 18%;
+    /* 本体背景 4% / sidebar 背景 7% の中間に寄せて境界線を目立たせない。
+       以前は 18% で一線だけが白く浮いて見えていた。 */
+    --sidebar-border: 0 0% 11%;
     --sidebar-ring: 0 0% 40%;
   }
 

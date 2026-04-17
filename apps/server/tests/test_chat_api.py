@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,7 @@ from cocktail_server.schemas.generate import GenerateImageCall, LlmTurnSpec
 from cocktail_server.schemas.messages import Message
 from cocktail_server.services.llm import LlmStreamChunk, LlmTextDelta, LlmTurnComplete
 from cocktail_server.services.prompt_builder import NEGATIVE_DEFAULT
+from cocktail_server.services.turn_registry import TurnRegistry
 from fastapi.testclient import TestClient
 from PIL import Image as PILImage
 
@@ -115,17 +118,42 @@ def _parse_sse(text: str) -> list[tuple[str, dict[str, Any]]]:
     return parsed
 
 
-def test_chat_new_conversation_emits_full_sequence(client: TestClient) -> None:
-    r = client.post(
-        "/chat",
-        json={"parts": [{"type": "text", "text": "ピンクの猫耳少女"}]},
-    )
+def _start_chat(client: TestClient, payload: dict[str, Any]) -> tuple[str, str]:
+    """`POST /api/chat` を呼んで `(conversation_id, turn_id)` を返すヘルパ。"""
+    r = client.post("/api/chat", json=payload)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    return body["conversation_id"], body["turn_id"]
+
+
+def _chat(
+    client: TestClient, payload: dict[str, Any]
+) -> tuple[str, str, list[tuple[str, dict[str, Any]]]]:
+    """POST → subscribe → 全 SSE を読みきるヘルパ。`(conversation_id, turn_id, events)` を返す。"""
+    conv_id, turn_id = _start_chat(client, payload)
+    r = client.get(f"/api/chat/turns/{turn_id}/events")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/event-stream")
+    return conv_id, turn_id, _parse_sse(r.text)
 
-    events = _parse_sse(r.text)
+
+def test_start_chat_returns_conversation_and_turn_ids(client: TestClient) -> None:
+    conversation_id, turn_id = _start_chat(
+        client,
+        {"parts": [{"type": "text", "text": "hi"}]},
+    )
+    assert conversation_id
+    assert turn_id
+    assert conversation_id != turn_id
+
+
+def test_subscribe_emits_full_sequence(client: TestClient) -> None:
+    conversation_id, _turn_id, events = _chat(
+        client,
+        {"parts": [{"type": "text", "text": "ピンクの猫耳少女"}]},
+    )
+
     names = [name for name, _ in events]
-    # text_delta は 0 個以上流れるので除外して比較
     names_no_delta = [n for n in names if n != "text_delta"]
     assert names_no_delta == [
         "conversation",
@@ -138,14 +166,13 @@ def test_chat_new_conversation_emits_full_sequence(client: TestClient) -> None:
         "done",
     ]
 
-    # text_delta は assistant_start と tool_call_start の間にだけ現れる
     start_idx = names.index("assistant_start")
     tool_start_idx = names.index("tool_call_start")
     for i in range(start_idx + 1, tool_start_idx):
         assert names[i] == "text_delta"
-    assert tool_start_idx > start_idx + 1  # 少なくとも 1 つ流れた
+    assert tool_start_idx > start_idx + 1
 
-    conversation_id = events[0][1]["conversation_id"]
+    assert events[0][1]["conversation_id"] == conversation_id
     user_msg = events[1][1]["message"]
     assert user_msg["conversation_id"] == conversation_id
     assert user_msg["role"] == "user"
@@ -177,53 +204,66 @@ def test_chat_new_conversation_emits_full_sequence(client: TestClient) -> None:
     assert assistant_msg["parts"][3]["image_id"] == image_ready["image_id"]
 
 
-def test_chat_continues_existing_conversation(client: TestClient) -> None:
-    first = client.post(
-        "/chat",
-        json={"parts": [{"type": "text", "text": "最初のリクエスト"}]},
+def test_existing_conversation_skips_conversation_event(client: TestClient) -> None:
+    first_conv, _, _ = _chat(
+        client,
+        {"parts": [{"type": "text", "text": "最初のリクエスト"}]},
     )
-    assert first.status_code == 200
-    first_events = _parse_sse(first.text)
-    conversation_id = first_events[0][1]["conversation_id"]
 
-    second = client.post(
-        "/chat",
-        json={
-            "conversation_id": conversation_id,
+    _, _, events = _chat(
+        client,
+        {
+            "conversation_id": first_conv,
             "parts": [{"type": "text", "text": "続けて描いて"}],
         },
     )
-    assert second.status_code == 200
-    second_events = _parse_sse(second.text)
-    names = [n for n, _ in second_events]
+    names = [n for n, _ in events]
     assert "conversation" not in names
     assert names[0] == "user_saved"
     assert names[-1] == "done"
 
 
-def test_chat_rejects_unknown_conversation(client: TestClient) -> None:
+def test_unknown_conversation_id_returns_404_on_post(client: TestClient) -> None:
     r = client.post(
-        "/chat",
+        "/api/chat",
         json={
             "conversation_id": "00000000-0000-0000-0000-000000000000",
             "parts": [{"type": "text", "text": "hi"}],
         },
     )
-    assert r.status_code == 200
-    events = _parse_sse(r.text)
-    names = [n for n, _ in events]
-    assert names == ["error", "done"]
-    assert events[0][1]["code"] == "conversation_not_found"
+    assert r.status_code == 404
+
+
+def test_subscribe_unknown_turn_returns_404(client: TestClient) -> None:
+    r = client.get("/api/chat/turns/00000000-0000-0000-0000-000000000000/events")
+    assert r.status_code == 404
+
+
+def test_subscribe_after_completion_replays_events(client: TestClient) -> None:
+    """完走済みターンを購読すると、replay バッファの全イベントが届いてから close する。"""
+    _, turn_id = _start_chat(client, {"parts": [{"type": "text", "text": "完走確認"}]})
+
+    # 1 回目の購読で完走を待つ
+    first = client.get(f"/api/chat/turns/{turn_id}/events")
+    assert first.status_code == 200
+    first_events = _parse_sse(first.text)
+    assert first_events[-1][0] == "done"
+
+    # 2 回目（retention 内）を購読すると replay で同じ順序で全部流れる
+    second = client.get(f"/api/chat/turns/{turn_id}/events")
+    assert second.status_code == 200
+    second_events = _parse_sse(second.text)
+    assert [n for n, _ in second_events] == [n for n, _ in first_events]
 
 
 def test_chat_rejects_empty_parts(client: TestClient) -> None:
-    r = client.post("/chat", json={"parts": []})
+    r = client.post("/api/chat", json={"parts": []})
     assert r.status_code == 422
 
 
 def test_chat_rejects_parts_without_text(client: TestClient) -> None:
     r = client.post(
-        "/chat",
+        "/api/chat",
         json={
             "parts": [
                 {
@@ -238,11 +278,10 @@ def test_chat_rejects_parts_without_text(client: TestClient) -> None:
 
 
 def test_chat_generated_image_is_served(client: TestClient) -> None:
-    r = client.post(
-        "/chat",
-        json={"parts": [{"type": "text", "text": "draw something"}]},
+    _, _, events = _chat(
+        client,
+        {"parts": [{"type": "text", "text": "draw something"}]},
     )
-    events = _parse_sse(r.text)
     image_url = next(data["image_url"] for name, data in events if name == "image_ready")
 
     r2 = client.get(image_url)
@@ -252,17 +291,15 @@ def test_chat_generated_image_is_served(client: TestClient) -> None:
 
 def test_chat_echoes_reference_images_in_tool_args(client: TestClient) -> None:
     image_ref = "11111111-1111-1111-1111-111111111111"
-    r = client.post(
-        "/chat",
-        json={
+    _, _, events = _chat(
+        client,
+        {
             "parts": [
                 {"type": "text", "text": "この絵を参考に"},
                 {"type": "image", "image_id": image_ref, "mime": "image/webp"},
             ],
         },
     )
-    assert r.status_code == 200
-    events = _parse_sse(r.text)
     tool_start = next(data for name, data in events if name == "tool_call_start")
     assert tool_start["name"] == "generate_image"
     assert tool_start["args"]["reference_images"] == [image_ref]
@@ -281,11 +318,9 @@ def test_chat_without_tool_call_emits_text_only(
     with TestClient(app) as c:
         app.state.llm = FakeLlm(spec=_make_spec(reasoning="ありがとうございます！", tool_calls=[]))
         app.state.image_gen = FakeImageGen()
-        r = c.post("/chat", json={"parts": [{"type": "text", "text": "ありがとう"}]})
+        _, _, events = _chat(c, {"parts": [{"type": "text", "text": "ありがとう"}]})
     get_settings.cache_clear()
 
-    assert r.status_code == 200
-    events = _parse_sse(r.text)
     names = [n for n, _ in events]
     names_no_delta = [n for n in names if n != "text_delta"]
     assert names_no_delta == [
@@ -315,24 +350,16 @@ def test_chat_second_turn_receives_previous_conversation(
         app.state.llm = fake_llm
         app.state.image_gen = FakeImageGen()
 
-        first = c.post(
-            "/chat",
-            json={"parts": [{"type": "text", "text": "初音ミクを描いて"}]},
-        )
-        assert first.status_code == 200
-        conversation_id = _parse_sse(first.text)[0][1]["conversation_id"]
-
-        second = c.post(
-            "/chat",
-            json={
-                "conversation_id": conversation_id,
+        conv_id, _, _ = _chat(c, {"parts": [{"type": "text", "text": "初音ミクを描いて"}]})
+        _chat(
+            c,
+            {
+                "conversation_id": conv_id,
                 "parts": [{"type": "text", "text": "もっと笑顔に"}],
             },
         )
-        assert second.status_code == 200
     get_settings.cache_clear()
 
-    # 1 ターン目は user 1 件、2 ターン目は user/assistant/user の 3 件が渡る
     assert len(fake_llm.received_histories) == 2
     first_history = fake_llm.received_histories[0]
     assert [m.role for m in first_history] == ["user"]
@@ -387,21 +414,18 @@ def test_chat_seed_action_keep_reuses_previous_seed(
         )
         app.state.image_gen = FakeImageGen()
 
-        first = c.post("/chat", json={"parts": [{"type": "text", "text": "1 枚目"}]})
-        first_events = _parse_sse(first.text)
-        conversation_id = first_events[0][1]["conversation_id"]
+        conv_id, _, first_events = _chat(c, {"parts": [{"type": "text", "text": "1 枚目"}]})
         first_seed = next(
             data["args"]["seed"] for name, data in first_events if name == "tool_call_start"
         )
 
-        second = c.post(
-            "/chat",
-            json={
-                "conversation_id": conversation_id,
+        _, _, second_events = _chat(
+            c,
+            {
+                "conversation_id": conv_id,
                 "parts": [{"type": "text", "text": "色味だけ調整"}],
             },
         )
-        second_events = _parse_sse(second.text)
         second_seed = next(
             data["args"]["seed"] for name, data in second_events if name == "tool_call_start"
         )
@@ -428,10 +452,9 @@ def test_chat_generated_image_appears_in_list_endpoint(
     with TestClient(app) as c:
         app.state.llm = FakeLlm()
         app.state.image_gen = FakeImageGen()
-        r = c.post("/chat", json={"parts": [{"type": "text", "text": "初回"}]})
-        events = _parse_sse(r.text)
+        _, _, events = _chat(c, {"parts": [{"type": "text", "text": "初回"}]})
         image_ready = next(data for name, data in events if name == "image_ready")
-        listing = c.get("/images").json()
+        listing = c.get("/api/images").json()
     get_settings.cache_clear()
 
     image_ids = [img["image_id"] for img in listing["images"]]
@@ -466,14 +489,80 @@ def test_chat_landscape_aspect_ratio_resolves_to_correct_size(
     with TestClient(app) as c:
         app.state.llm = FakeLlm(spec=_make_spec(tool_calls=[landscape_call]))
         app.state.image_gen = FakeImageGen()
-        r = c.post("/chat", json={"parts": [{"type": "text", "text": "横長で風景を"}]})
+        _, _, events = _chat(c, {"parts": [{"type": "text", "text": "横長で風景を"}]})
     get_settings.cache_clear()
 
-    assert r.status_code == 200
-    events = _parse_sse(r.text)
     tool_start = next(data for name, data in events if name == "tool_call_start")
     assert tool_start["args"]["aspect_ratio"] == "landscape"
     assert tool_start["args"]["width"] == 1152
     assert tool_start["args"]["height"] == 896
     assert tool_start["args"]["cfg_preset"] == "crisp"
     assert tool_start["args"]["cfg"] == 4.5
+
+
+def test_retention_gc_removes_turn_after_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """retention 経過後の turn は 404 を返す。"""
+    monkeypatch.setenv("IMAGES_DIR", str(tmp_path / "images"))
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "models"))
+    monkeypatch.setenv("WEIGHTS_DIR", str(tmp_path / "weights"))
+    monkeypatch.setenv("STARTUP_PRELOAD", "false")
+    get_settings.cache_clear()
+    app = create_app()
+    with TestClient(app) as c:
+        app.state.llm = FakeLlm()
+        app.state.image_gen = FakeImageGen()
+        # retention を極めて短くした registry に差し替える
+        app.state.turn_registry = TurnRegistry(retention_seconds=0.05)
+
+        _, turn_id, _ = _chat(c, {"parts": [{"type": "text", "text": "retention"}]})
+        # 完走待ちと GC 待ちを少しだけ寝かせる
+        import time
+
+        time.sleep(0.3)
+
+        r = c.get(f"/api/chat/turns/{turn_id}/events")
+        assert r.status_code == 404
+    get_settings.cache_clear()
+
+
+async def test_turn_registry_concurrent_subscribers_receive_same_events() -> None:
+    """2 subscriber が同じターンを観測し、同じ順序で全イベントを受け取る。"""
+    from cocktail_server.schemas.events import (
+        AssistantStartEvent,
+        DoneEvent,
+        UserSavedEvent,
+    )
+    from cocktail_server.schemas.messages import Message, TextPart
+
+    registry = TurnRegistry(retention_seconds=1.0)
+    turn = registry.register("conv-1")
+
+    msg = Message(
+        id="u1",
+        conversation_id="conv-1",
+        role="user",
+        parts=[TextPart(text="hi")],
+        created_at=datetime.now(UTC),
+    )
+
+    collected: list[list[str]] = [[], []]
+
+    async def collector(idx: int) -> None:
+        async with registry.subscribe(turn.turn_id) as iterator:
+            async for ev in iterator:
+                collected[idx].append(ev.type)
+
+    t1 = asyncio.create_task(collector(0))
+    t2 = asyncio.create_task(collector(1))
+    await asyncio.sleep(0)  # subscribe の登録を先に走らせる
+
+    registry.publish(turn.turn_id, UserSavedEvent(message=msg))
+    registry.publish(turn.turn_id, AssistantStartEvent(message_id="a1"))
+    registry.publish(turn.turn_id, DoneEvent())
+    registry.finish(turn.turn_id)
+
+    await asyncio.wait_for(asyncio.gather(t1, t2), timeout=1.0)
+    assert collected[0] == ["user_saved", "assistant_start", "done"]
+    assert collected[1] == ["user_saved", "assistant_start", "done"]

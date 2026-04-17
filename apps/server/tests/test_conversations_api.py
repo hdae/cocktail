@@ -55,7 +55,7 @@ async def test_get_conversation_returns_detail_with_messages_and_images(
         ),
     )
 
-    r = client.get(f"/conversations/{cid}")
+    r = client.get(f"/api/conversations/{cid}")
     assert r.status_code == 200, r.text
     data = r.json()
     assert data["id"] == cid
@@ -65,12 +65,12 @@ async def test_get_conversation_returns_detail_with_messages_and_images(
 
 
 def test_get_conversation_returns_404_for_unknown_id(client: TestClient) -> None:
-    r = client.get("/conversations/00000000-0000-0000-0000-000000000000")
+    r = client.get("/api/conversations/00000000-0000-0000-0000-000000000000")
     assert r.status_code == 404
 
 
 def test_list_conversations_returns_empty_when_none_exist(client: TestClient) -> None:
-    r = client.get("/conversations")
+    r = client.get("/api/conversations")
     assert r.status_code == 200
     assert r.json() == []
 
@@ -103,7 +103,7 @@ async def test_list_conversations_returns_summaries_sorted_by_updated_at_desc(
         ),
     )
 
-    r = client.get("/conversations")
+    r = client.get("/api/conversations")
     assert r.status_code == 200
     items = r.json()
     ids = [item["id"] for item in items]
@@ -132,7 +132,7 @@ async def test_list_conversations_title_truncates_and_falls_back(
         ),
     )
 
-    r = client.get("/conversations")
+    r = client.get("/api/conversations")
     assert r.status_code == 200
     items = {item["id"]: item for item in r.json()}
     assert items[empty]["title"] == "(新規会話)"

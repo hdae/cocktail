@@ -34,7 +34,7 @@ def _png_bytes(w: int = 16, h: int = 16) -> bytes:
 
 def test_upload_png_returns_normalized_webp_response(client: TestClient) -> None:
     r = client.post(
-        "/images",
+        "/api/images",
         files={"file": ("sample.png", _png_bytes(24, 32), "image/png")},
     )
     assert r.status_code == 200, r.text
@@ -51,7 +51,7 @@ def test_upload_png_returns_normalized_webp_response(client: TestClient) -> None
 
 def test_upload_rejects_unsupported_mime(client: TestClient) -> None:
     r = client.post(
-        "/images",
+        "/api/images",
         files={"file": ("x.txt", b"hello", "text/plain")},
     )
     assert r.status_code == 415
@@ -59,7 +59,7 @@ def test_upload_rejects_unsupported_mime(client: TestClient) -> None:
 
 def test_upload_rejects_empty_file(client: TestClient) -> None:
     r = client.post(
-        "/images",
+        "/api/images",
         files={"file": ("empty.png", b"", "image/png")},
     )
     assert r.status_code == 400
@@ -67,7 +67,7 @@ def test_upload_rejects_empty_file(client: TestClient) -> None:
 
 def test_upload_rejects_corrupted_bytes(client: TestClient) -> None:
     r = client.post(
-        "/images",
+        "/api/images",
         files={"file": ("garbage.png", b"not-really-a-png", "image/png")},
     )
     assert r.status_code == 400
