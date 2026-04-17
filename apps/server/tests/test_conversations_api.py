@@ -46,7 +46,7 @@ async def test_get_conversation_returns_detail_with_messages_and_images(
             image_url="/images/11111111-1111-1111-1111-111111111111.webp",
             conversation_id=cid,
             created_at=datetime.now(UTC),
-            prompt_excerpt="tag1, tag2",
+            prompt="tag1, tag2",
             seed=42,
             aspect_ratio="portrait",
             cfg_preset="standard",

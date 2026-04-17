@@ -464,7 +464,7 @@ def test_chat_generated_image_appears_in_list_endpoint(
     assert found["cfg_preset"] == "standard"
     assert found["width"] == 896
     assert found["height"] == 1152
-    assert found["prompt_excerpt"].startswith("score_7")
+    assert found["prompt"].startswith("score_7")
 
 
 def test_chat_landscape_aspect_ratio_resolves_to_correct_size(

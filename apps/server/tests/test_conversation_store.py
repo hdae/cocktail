@@ -30,7 +30,7 @@ def _ref(
         image_url=f"/images/{image_id}.webp",
         conversation_id=conversation_id,
         created_at=created_at,
-        prompt_excerpt="tag1, tag2, tag3",
+        prompt="tag1, tag2, tag3",
         seed=seed,
         aspect_ratio="portrait",
         cfg_preset="standard",

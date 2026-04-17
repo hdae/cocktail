@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from cocktail_server.schemas.generate import AspectRatio, CfgPreset
 
@@ -28,7 +28,7 @@ class GeneratedImageRef(BaseModel):
     image_url: str
     conversation_id: str
     created_at: datetime
-    prompt_excerpt: str = Field(max_length=240)
+    prompt: str
     seed: int
     aspect_ratio: AspectRatio
     cfg_preset: CfgPreset

@@ -13,7 +13,7 @@ export function GalleryView(): JSX.Element {
   const [nextBefore, setNextBefore] = useState<string | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<GeneratedImageRef | null>(null);
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
 
   const load = useCallback(async (before?: string) => {
     setStatus("loading");
@@ -80,16 +80,16 @@ export function GalleryView(): JSX.Element {
         {/* 横幅に応じて列数を増やす。極端な横長モニタでも 1 枚 160px 前後を保ち、
             マス目が大きくなりすぎないように 2xl で 8 列まで段階的に増やす。 */}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8">
-          {images.map((img) => (
+          {images.map((img, idx) => (
             <button
               key={img.image_id}
               type="button"
-              onClick={() => setSelected(img)}
+              onClick={() => setSelectedIndex(idx)}
               className="group relative aspect-square overflow-hidden rounded-lg bg-neutral-900 transition hover:ring-2 hover:ring-neutral-400"
             >
               <img
                 src={img.image_url}
-                alt={img.prompt_excerpt}
+                alt={img.prompt}
                 loading="lazy"
                 className="h-full w-full object-cover transition group-hover:opacity-90"
               />
@@ -110,10 +110,12 @@ export function GalleryView(): JSX.Element {
         )}
       </div>
 
-      {selected && (
+      {selectedIndex !== null && images[selectedIndex] && (
         <GalleryDetailPanel
-          image={selected}
-          onClose={() => setSelected(null)}
+          images={images}
+          index={selectedIndex}
+          onIndexChange={setSelectedIndex}
+          onClose={() => setSelectedIndex(null)}
         />
       )}
     </div>

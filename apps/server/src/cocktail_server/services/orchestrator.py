@@ -50,7 +50,6 @@ logger = logging.getLogger(__name__)
 
 GENERATE_IMAGE_TOOL = "generate_image"
 _TOOL_SUCCESS_SUMMARY = "画像を生成しました"
-_PROMPT_EXCERPT_MAX = 200
 
 
 def _utcnow() -> datetime:
@@ -62,14 +61,6 @@ def _save_webp(img: Image, images_dir: Path) -> str:
     path = images_dir / f"{image_id}.webp"
     img.save(path, format="WEBP", quality=92, method=6)
     return image_id
-
-
-def _prompt_excerpt(positive: str) -> str:
-    """ギャラリー表示用の短い抜粋。`positive` 先頭を `_PROMPT_EXCERPT_MAX` 文字で切る。"""
-    text = positive.strip()
-    if len(text) <= _PROMPT_EXCERPT_MAX:
-        return text
-    return text[: _PROMPT_EXCERPT_MAX - 1].rstrip() + "…"
 
 
 class ChatOrchestrator:
@@ -216,7 +207,7 @@ class ChatOrchestrator:
             image_url=result["image_url"],
             conversation_id=conversation_id,
             created_at=_utcnow(),
-            prompt_excerpt=_prompt_excerpt(tool_call.positive),
+            prompt=tool_call.positive.strip(),
             seed=resolved_seed,
             aspect_ratio=tool_call.aspect_ratio,
             cfg_preset=tool_call.cfg_preset,

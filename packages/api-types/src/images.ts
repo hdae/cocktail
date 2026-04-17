@@ -20,7 +20,7 @@ export const GeneratedImageRefSchema = z
     image_url: z.string(),
     conversation_id: z.string(),
     created_at: z.string(),
-    prompt_excerpt: z.string(),
+    prompt: z.string(),
     seed: z.number().int(),
     aspect_ratio: z.enum(["portrait", "landscape", "square"]),
     cfg_preset: z.enum(["soft", "standard", "crisp"]),
