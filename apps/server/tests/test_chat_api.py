@@ -353,6 +353,97 @@ def test_chat_second_turn_receives_previous_conversation(
     assert "もっと笑顔に" in latest_user_text
 
 
+def test_chat_seed_action_keep_reuses_previous_seed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2 ターン目に `seed_action="keep"` を出せば、直前画像と同じ seed で生成される。"""
+    monkeypatch.setenv("IMAGES_DIR", str(tmp_path / "images"))
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "models"))
+    monkeypatch.setenv("WEIGHTS_DIR", str(tmp_path / "weights"))
+    monkeypatch.setenv("STARTUP_PRELOAD", "false")
+    get_settings.cache_clear()
+    app = create_app()
+    first_call = GenerateImageCall(
+        name="generate_image",
+        positive="score_7, masterpiece, best quality, safe, newest, 1girl, first",
+        negative=NEGATIVE_DEFAULT,
+        aspect_ratio="portrait",
+        cfg_preset="standard",
+        seed_action="new",
+        rationale="first",
+    )
+    keep_call = GenerateImageCall(
+        name="generate_image",
+        positive="score_7, masterpiece, best quality, safe, newest, 1girl, tweak",
+        negative=NEGATIVE_DEFAULT,
+        aspect_ratio="portrait",
+        cfg_preset="standard",
+        seed_action="keep",
+        rationale="tweak",
+    )
+    with TestClient(app) as c:
+        app.state.llm = FakeLlm(
+            specs=[_make_spec(tool_calls=[first_call]), _make_spec(tool_calls=[keep_call])]
+        )
+        app.state.image_gen = FakeImageGen()
+
+        first = c.post("/chat", json={"parts": [{"type": "text", "text": "1 枚目"}]})
+        first_events = _parse_sse(first.text)
+        conversation_id = first_events[0][1]["conversation_id"]
+        first_seed = next(
+            data["args"]["seed"] for name, data in first_events if name == "tool_call_start"
+        )
+
+        second = c.post(
+            "/chat",
+            json={
+                "conversation_id": conversation_id,
+                "parts": [{"type": "text", "text": "色味だけ調整"}],
+            },
+        )
+        second_events = _parse_sse(second.text)
+        second_seed = next(
+            data["args"]["seed"] for name, data in second_events if name == "tool_call_start"
+        )
+    get_settings.cache_clear()
+
+    assert first_seed == second_seed
+    assert (
+        next(
+            data["args"]["seed_action"] for name, data in second_events if name == "tool_call_start"
+        )
+        == "keep"
+    )
+
+
+def test_chat_generated_image_appears_in_list_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("IMAGES_DIR", str(tmp_path / "images"))
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "models"))
+    monkeypatch.setenv("WEIGHTS_DIR", str(tmp_path / "weights"))
+    monkeypatch.setenv("STARTUP_PRELOAD", "false")
+    get_settings.cache_clear()
+    app = create_app()
+    with TestClient(app) as c:
+        app.state.llm = FakeLlm()
+        app.state.image_gen = FakeImageGen()
+        r = c.post("/chat", json={"parts": [{"type": "text", "text": "初回"}]})
+        events = _parse_sse(r.text)
+        image_ready = next(data for name, data in events if name == "image_ready")
+        listing = c.get("/images").json()
+    get_settings.cache_clear()
+
+    image_ids = [img["image_id"] for img in listing["images"]]
+    assert image_ready["image_id"] in image_ids
+    found = next(img for img in listing["images"] if img["image_id"] == image_ready["image_id"])
+    assert found["aspect_ratio"] == "portrait"
+    assert found["cfg_preset"] == "standard"
+    assert found["width"] == 896
+    assert found["height"] == 1152
+    assert found["prompt_excerpt"].startswith("score_7")
+
+
 def test_chat_landscape_aspect_ratio_resolves_to_correct_size(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

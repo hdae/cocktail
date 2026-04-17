@@ -3,15 +3,20 @@ from __future__ import annotations
 import io
 import re
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Final
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from PIL import Image as PILImage
 from PIL.Image import Image
 
-from cocktail_server.schemas.images import ImageUploadResponse
+from cocktail_server.schemas.images import (
+    GeneratedImageList,
+    ImageUploadResponse,
+)
+from cocktail_server.services.conversation_store import ConversationStore
 
 _UUID_RE: Final[re.Pattern[str]] = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -54,6 +59,18 @@ def _normalize_and_save(raw: bytes, images_dir: Path) -> ImageUploadResponse:
 
 def make_images_router(images_dir: Path) -> APIRouter:
     router = APIRouter()
+
+    # NOTE: ルート順序重要。`/images` のフラット一覧は `/images/{image_id}.webp`
+    # より先に宣言する（FastAPI は宣言順にマッチする）。
+    @router.get("/images", response_model=GeneratedImageList)
+    async def list_generated_images(
+        request: Request,
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+        before: Annotated[datetime | None, Query()] = None,
+    ) -> GeneratedImageList:
+        store: ConversationStore = request.app.state.conversations
+        items, next_before = await store.list_all_generated_images(limit=limit, before=before)
+        return GeneratedImageList(images=items, next_before=next_before)
 
     @router.post("/images", response_model=ImageUploadResponse)
     async def upload_image(

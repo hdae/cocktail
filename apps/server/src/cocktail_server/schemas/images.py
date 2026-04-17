@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from cocktail_server.schemas.generate import AspectRatio, CfgPreset
 
 
 class ImageUploadResponse(BaseModel):
@@ -13,3 +17,29 @@ class ImageUploadResponse(BaseModel):
     mime: str
     width: int
     height: int
+
+
+class GeneratedImageRef(BaseModel):
+    """`generate_image` ツールで生成された画像のメタデータ。ギャラリー横断ビュー用。"""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    image_id: str
+    image_url: str
+    conversation_id: str
+    created_at: datetime
+    prompt_excerpt: str = Field(max_length=240)
+    seed: int
+    aspect_ratio: AspectRatio
+    cfg_preset: CfgPreset
+    width: int
+    height: int
+
+
+class GeneratedImageList(BaseModel):
+    """`GET /images` の応答。`next_before` を `?before=` に渡すと次ページが取れる。"""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    images: list[GeneratedImageRef]
+    next_before: datetime | None = None
