@@ -14,6 +14,7 @@ export function ChatView(): JSX.Element {
     error,
     sendMessage,
     reset,
+    setView,
   } = useChatStore();
 
   const pendingMessage = useMemo(
@@ -31,6 +32,13 @@ export function ChatView(): JSX.Element {
           {conversationId && (
             <span className="font-mono">{conversationId.slice(0, 8)}</span>
           )}
+          <button
+            type="button"
+            onClick={() => setView("gallery")}
+            className="rounded-md px-2.5 py-1 text-xs text-neutral-400 transition hover:bg-neutral-900 hover:text-neutral-200"
+          >
+            ギャラリー
+          </button>
           <button
             type="button"
             onClick={reset}

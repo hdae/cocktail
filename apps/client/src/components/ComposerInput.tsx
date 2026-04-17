@@ -1,6 +1,8 @@
-import { useCallback, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useState, type KeyboardEvent } from "react";
 
 import type { UserContentPart } from "@cocktail/api-types";
+
+import { useChatStore } from "../store/chat";
 
 interface Props {
   disabled?: boolean;
@@ -12,6 +14,15 @@ const PLACEHOLDER =
 
 export function ComposerInput({ disabled, onSend }: Props): JSX.Element {
   const [text, setText] = useState("");
+  const composerDraft = useChatStore((s) => s.composerDraft);
+  const setComposerDraft = useChatStore((s) => s.setComposerDraft);
+
+  useEffect(() => {
+    if (composerDraft) {
+      setText(composerDraft);
+      setComposerDraft("");
+    }
+  }, [composerDraft, setComposerDraft]);
 
   const send = useCallback(() => {
     const body = text.trim();

@@ -123,7 +123,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.residency_coresident_threshold_gb,
     )
 
-    llm = LlmService(settings.llm_model_id)
+    llm = LlmService(settings.llm_model_id, images_dir=settings.images_dir)
     image_gen = ImageGenService(settings.image_model_id)
     manager = ModelManager(policy=policy)
     conversations = ConversationStore()
