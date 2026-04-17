@@ -1,6 +1,12 @@
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 
-import { type ChatRequest, type SseEvent, SseEventSchema } from "@cocktail/api-types";
+import {
+  type ChatRequest,
+  type GeneratedImageRef,
+  GeneratedImageRefSchema,
+  type SseEvent,
+  SseEventSchema,
+} from "@cocktail/api-types";
 
 /**
  * POST /chat を叩いて SSE を受信する。呼び出し側は `for await` で順次受け取れる。
@@ -90,4 +96,56 @@ export async function* streamChat(
   } finally {
     await promise;
   }
+}
+
+export interface ImageEventsOptions {
+  /** 新しい `GeneratedImageRef` が broadcast された時に呼ばれる。 */
+  onCreate: (ref: GeneratedImageRef) => void;
+  /**
+   * (再)接続成功時に呼ばれる。呼出側は初回/再接続を自前でカウントし、
+   * 再接続時には一覧 API を再取得して欠落を埋めるのに使う。
+   */
+  onOpen?: () => void;
+  signal: AbortSignal;
+}
+
+/**
+ * GET /images/events を購読し、broadcast された `GeneratedImageRef` を受け取る。
+ *
+ * サーバは接続維持のため 15 秒おきに `: ping` コメントを送ってくる。
+ * fetchEventSource は transport エラー時に自動再接続するので、呼び出し側は
+ * signal で明示的に abort するまで中断を気にしなくて良い。
+ */
+export function streamImageEvents(options: ImageEventsOptions): Promise<void> {
+  const { onCreate, onOpen, signal } = options;
+  return fetchEventSource("/images/events", {
+    method: "GET",
+    signal,
+    openWhenHidden: true,
+    onopen: async (res) => {
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+      }
+      onOpen?.();
+    },
+    onmessage: (msg) => {
+      if (msg.event !== "image_created" || !msg.data) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(msg.data);
+      } catch {
+        return;
+      }
+      const result = GeneratedImageRefSchema.safeParse(parsed);
+      if (!result.success) {
+        console.warn("Dropping unparseable image event", parsed, result.error);
+        return;
+      }
+      onCreate(result.data);
+    },
+    onerror: (err) => {
+      // throw せず return undefined → ライブラリが自動再接続する。
+      console.warn("image events stream error; reconnecting", err);
+    },
+  });
 }

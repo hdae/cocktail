@@ -230,3 +230,75 @@ async def test_get_session_raises_for_unknown_id() -> None:
     s = ConversationStore()
     with pytest.raises(KeyError):
         await s.get_session("no-such")
+
+
+@pytest.mark.asyncio
+async def test_subscribe_images_receives_broadcast() -> None:
+    s = ConversationStore()
+    cid = await s.create()
+    async with s.subscribe_images() as queue:
+        ref = _ref(
+            cid,
+            image_id="11111111-1111-1111-1111-111111111111",
+            created_at=datetime.now(UTC),
+        )
+        await s.record_generated_image(cid, ref)
+        received = await queue.get()
+        assert received.image_id == ref.image_id
+
+
+@pytest.mark.asyncio
+async def test_subscribe_images_supports_multiple_subscribers() -> None:
+    s = ConversationStore()
+    cid = await s.create()
+    async with s.subscribe_images() as q1, s.subscribe_images() as q2:
+        ref = _ref(
+            cid,
+            image_id="22222222-2222-2222-2222-222222222222",
+            created_at=datetime.now(UTC),
+        )
+        await s.record_generated_image(cid, ref)
+        r1 = await q1.get()
+        r2 = await q2.get()
+        assert r1.image_id == r2.image_id == ref.image_id
+
+
+@pytest.mark.asyncio
+async def test_subscribe_images_cleans_up_on_exit() -> None:
+    s = ConversationStore()
+    cid = await s.create()
+    async with s.subscribe_images():
+        pass
+    # 購読解除後に record してもエラーなく完了することを確認（残留参照が無い）
+    await s.record_generated_image(
+        cid,
+        _ref(
+            cid,
+            image_id="33333333-3333-3333-3333-333333333333",
+            created_at=datetime.now(UTC),
+        ),
+    )
+    assert s._image_subscribers == set()
+
+
+@pytest.mark.asyncio
+async def test_subscribe_images_drops_oldest_on_overflow() -> None:
+    """queue は maxsize=32。溢れた時点で古い方を捨て最新を残す。"""
+    s = ConversationStore()
+    cid = await s.create()
+    async with s.subscribe_images() as queue:
+        # 33 件連続 broadcast。drain せずに送り続ける。
+        t0 = datetime(2026, 4, 18, 0, 0, 0, tzinfo=UTC)
+        for i in range(33):
+            ref = _ref(
+                cid,
+                image_id=f"{i:08x}-0000-0000-0000-000000000000",
+                created_at=t0 + timedelta(seconds=i),
+                seed=i,
+            )
+            await s.record_generated_image(cid, ref)
+        # maxsize 32 を超えず、最新が先頭から 32 件分残る
+        assert queue.qsize() == 32
+        first = await queue.get()
+        # 33 入れて 1 つ捨てたので最古は seed=1（index=0 が落ちた）
+        assert first.seed == 1

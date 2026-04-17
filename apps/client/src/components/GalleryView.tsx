@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { GeneratedImageRef } from "@cocktail/api-types";
 
 import { SidebarTrigger } from "@/components/ui/sidebar";
 
 import { listGeneratedImages } from "../lib/api";
+import { streamImageEvents } from "../lib/sse";
 import { GalleryDetailPanel } from "./GalleryDetailPanel";
 
 export function GalleryView(): JSX.Element {
@@ -31,6 +32,29 @@ export function GalleryView(): JSX.Element {
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  // /images/events を購読して他クライアントの生成結果もリアルタイムに反映する。
+  // 再接続時は欠落分を補うため一覧を取り直す。
+  const reconnectRef = useRef(0);
+  useEffect(() => {
+    const abort = new AbortController();
+    void streamImageEvents({
+      onCreate: (ref) => {
+        setImages((prev) => {
+          if (prev.some((i) => i.image_id === ref.image_id)) return prev;
+          return [ref, ...prev];
+        });
+      },
+      onOpen: () => {
+        reconnectRef.current += 1;
+        if (reconnectRef.current > 1) {
+          void load();
+        }
+      },
+      signal: abort.signal,
+    });
+    return () => abort.abort();
   }, [load]);
 
   return (

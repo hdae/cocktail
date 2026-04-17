@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -11,6 +14,9 @@ from cocktail_server.schemas.messages import Message, TextPart
 
 _TITLE_MAX = 40
 _TITLE_FALLBACK = "(新規会話)"
+
+# 1 subscriber あたりのキュー上限。遅いクライアントでサーバを詰まらせないため上限で古いのを捨てる。
+_IMAGE_SUB_QUEUE_MAX = 32
 
 
 def _utcnow() -> datetime:
@@ -59,6 +65,8 @@ class ConversationStore:
 
     def __init__(self) -> None:
         self._sessions: dict[str, Session] = {}
+        # `/images/events` の購読者。`subscribe_images` で生成される asyncio.Queue の集合。
+        self._image_subscribers: set[asyncio.Queue[GeneratedImageRef]] = set()
 
     async def create(self) -> str:
         """新規会話 id を払い出す。空の履歴が作成される。"""
@@ -112,7 +120,11 @@ class ConversationStore:
         )
 
     async def record_generated_image(self, conversation_id: str, ref: GeneratedImageRef) -> None:
-        """画像生成完了時に呼ぶ。ref.seed を last_image_seed に反映し、一覧にも追加する。"""
+        """画像生成完了時に呼ぶ。ref.seed を last_image_seed に反映し、一覧にも追加する。
+
+        併せて `/images/events` 購読者全員にも broadcast する。遅いクライアントの
+        キューが満杯なら古い 1 件を捨てて最新を残す（ギャラリー表示では新しい方が重要）。
+        """
         session = self._sessions.get(conversation_id)
         if session is None:
             raise KeyError(conversation_id)
@@ -121,6 +133,38 @@ class ConversationStore:
         session.generated_images.append(ref)
         session.last_image_seed = ref.seed
         session.updated_at = _utcnow()
+        self._broadcast_image(ref)
+
+    def _broadcast_image(self, ref: GeneratedImageRef) -> None:
+        for queue in list(self._image_subscribers):
+            try:
+                queue.put_nowait(ref)
+            except asyncio.QueueFull:
+                # 最古を 1 件捨てて入れ直す。それでも失敗する（極端な競合）なら諦める。
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    queue.put_nowait(ref)
+                except asyncio.QueueFull:
+                    pass
+
+    @asynccontextmanager
+    async def subscribe_images(self) -> AsyncIterator[asyncio.Queue[GeneratedImageRef]]:
+        """`/images/events` 向けの購読。コンテキスト終了時に自動で購読解除する。
+
+        購読者ごとに maxsize=32 の `asyncio.Queue` を割り当てる。溢れたら古い方から
+        捨てる（ギャラリー用途では最新を見せる方が価値が高い）。
+        """
+        queue: asyncio.Queue[GeneratedImageRef] = asyncio.Queue(
+            maxsize=_IMAGE_SUB_QUEUE_MAX
+        )
+        self._image_subscribers.add(queue)
+        try:
+            yield queue
+        finally:
+            self._image_subscribers.discard(queue)
 
     async def get_last_image_seed(self, conversation_id: str) -> int | None:
         """`seed_action="keep"` 解決用。会話が無い / 画像未生成なら None。"""

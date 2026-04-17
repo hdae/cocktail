@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import re
 import uuid
+from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Final
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from PIL import Image as PILImage
 from PIL.Image import Image
 
@@ -17,6 +19,9 @@ from cocktail_server.schemas.images import (
     ImageUploadResponse,
 )
 from cocktail_server.services.conversation_store import ConversationStore
+
+# keepalive `: ping` を流す間隔（秒）。接続が途切れる前に送ってプロキシ側の idle 切断を防ぐ。
+_SSE_PING_INTERVAL_S: Final[float] = 15.0
 
 _UUID_RE: Final[re.Pattern[str]] = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -60,8 +65,38 @@ def _normalize_and_save(raw: bytes, images_dir: Path) -> ImageUploadResponse:
 def make_images_router(images_dir: Path) -> APIRouter:
     router = APIRouter()
 
-    # NOTE: ルート順序重要。`/images` のフラット一覧は `/images/{image_id}.webp`
-    # より先に宣言する（FastAPI は宣言順にマッチする）。
+    # NOTE: ルート順序重要。`/images` のフラット一覧および `/images/events` の SSE は
+    # `/images/{image_id}.webp` より先に宣言する（FastAPI は宣言順にマッチする）。
+    @router.get("/images/events")
+    async def stream_image_events(request: Request) -> StreamingResponse:
+        """生成画像の broadcast SSE。誰かが `record_generated_image` を呼ぶと全接続者に流れる。
+
+        event 名は `image_created`、payload は `GeneratedImageRef` の JSON。
+        15 秒おきに `: ping` コメントを流してプロキシの idle 切断を回避する。
+        """
+        store: ConversationStore = request.app.state.conversations
+
+        async def event_source() -> AsyncIterator[bytes]:
+            async with store.subscribe_images() as queue:
+                while True:
+                    if await request.is_disconnected():
+                        return
+                    try:
+                        ref = await asyncio.wait_for(
+                            queue.get(), timeout=_SSE_PING_INTERVAL_S
+                        )
+                    except TimeoutError:
+                        yield b": ping\n\n"
+                        continue
+                    payload = ref.model_dump_json()
+                    yield f"event: image_created\ndata: {payload}\n\n".encode()
+
+        return StreamingResponse(
+            event_source(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
+
     @router.get("/images", response_model=GeneratedImageList)
     async def list_generated_images(
         request: Request,
