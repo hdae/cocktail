@@ -21,6 +21,12 @@ class ImageGenService:
         self._model_id = model_id
         self._pipe: Any = None
 
+    def set_model_id(self, model_id: str) -> None:
+        """ロード前に model_id を差し替える（AIR を解決したローカルパスへ置換する用途）。"""
+        if self._pipe is not None:
+            raise RuntimeError("cannot change model_id after the pipeline is loaded")
+        self._model_id = model_id
+
     def is_loaded(self) -> bool:
         return self._pipe is not None
 

@@ -33,27 +33,25 @@ export function ComposerInput({ disabled, onSend }: Props): JSX.Element {
   const canSend = !disabled && text.trim().length > 0;
 
   return (
-    <div className="bg-neutral-950 px-5 pb-5 pt-2">
-      <div className="mx-auto flex max-w-5xl items-end gap-2">
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder={PLACEHOLDER}
-          rows={1}
-          className="min-h-10 max-h-40 flex-1 resize-none rounded-lg bg-neutral-900 px-3.5 py-2 text-sm leading-6 text-neutral-100 placeholder:text-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-600 disabled:opacity-50"
-          style={{ fieldSizing: "content" } as React.CSSProperties}
-          disabled={disabled}
-        />
-        <button
-          type="button"
-          onClick={send}
-          disabled={!canSend}
-          className="h-10 shrink-0 rounded-lg bg-neutral-100 px-4 text-sm font-medium text-neutral-900 transition hover:bg-white disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
-        >
-          送信
-        </button>
-      </div>
+    <div className="flex items-end gap-2">
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={onKeyDown}
+        placeholder={PLACEHOLDER}
+        rows={1}
+        className="min-h-10 max-h-40 flex-1 resize-none rounded-lg bg-neutral-900 px-3.5 py-2 text-sm leading-6 text-neutral-100 placeholder:text-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-600 disabled:opacity-50"
+        style={{ fieldSizing: "content" } as React.CSSProperties}
+        disabled={disabled}
+      />
+      <button
+        type="button"
+        onClick={send}
+        disabled={!canSend}
+        className="h-10 shrink-0 rounded-lg bg-neutral-100 px-4 text-sm font-medium text-neutral-900 transition hover:bg-white disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
+      >
+        送信
+      </button>
     </div>
   );
 }

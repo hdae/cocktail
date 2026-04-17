@@ -2,6 +2,7 @@ import { useMemo } from "react";
 
 import { pendingAsMessage, useChatStore } from "../store/chat";
 import { ComposerInput } from "./ComposerInput";
+import { HealthBanner } from "./HealthBanner";
 import { MessageList } from "./MessageList";
 
 export function ChatView(): JSX.Element {
@@ -40,17 +41,22 @@ export function ChatView(): JSX.Element {
         </div>
       </header>
       <MessageList messages={messages} pending={pendingMessage} />
-      {error && (
-        <div className="mx-5 mb-2 rounded-md bg-red-950/40 px-3 py-2 text-xs text-red-200">
-          {error}
+      <div className="bg-neutral-950 px-5 pb-5 pt-2">
+        <div className="mx-auto flex max-w-5xl flex-col gap-2">
+          <HealthBanner />
+          {error && (
+            <div className="rounded-md bg-red-950/40 px-3 py-2 text-xs text-red-200">
+              {error}
+            </div>
+          )}
+          <ComposerInput
+            disabled={status === "streaming"}
+            onSend={(parts) => {
+              void sendMessage(parts);
+            }}
+          />
         </div>
-      )}
-      <ComposerInput
-        disabled={status === "streaming"}
-        onSend={(parts) => {
-          void sendMessage(parts);
-        }}
-      />
+      </div>
     </div>
   );
 }

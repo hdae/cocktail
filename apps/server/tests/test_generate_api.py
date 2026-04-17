@@ -68,7 +68,8 @@ def test_health_returns_ok(client: TestClient) -> None:
     r = client.get("/health")
     assert r.status_code == 200
     data = r.json()
-    assert data["status"] == "ok"
+    assert data["startup"]["state"] == "ready"
+    assert data["startup"]["error"] is None
     assert data["models"]["llm"] in {"idle", "loading", "loaded", "error"}
     assert data["models"]["image"] in {"idle", "loading", "loaded", "error"}
     assert data["queue_depth"] == 0

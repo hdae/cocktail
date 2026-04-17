@@ -3,7 +3,13 @@ from __future__ import annotations
 import torch
 from fastapi import APIRouter, Request
 
-from cocktail_server.schemas.health import GpuInfo, HealthResponse, ModelsStatus
+from cocktail_server.schemas.health import (
+    GpuInfo,
+    HealthResponse,
+    ModelsStatus,
+    StartupState,
+    StartupStatus,
+)
 
 router = APIRouter()
 
@@ -28,8 +34,10 @@ def _gpu_info() -> GpuInfo | None:
 def health(request: Request) -> HealthResponse:
     manager = request.app.state.model_manager
     statuses = manager.snapshot_status()
+    state: StartupState = getattr(request.app.state, "startup_state", "ready")
+    error: str | None = getattr(request.app.state, "startup_error", None)
     return HealthResponse(
-        status="ok",
+        startup=StartupStatus(state=state, error=error),
         gpu=_gpu_info(),
         models=ModelsStatus(llm=statuses["llm"], image=statuses["image"]),
         queue_depth=manager.queue_depth,
