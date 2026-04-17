@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from cocktail_server.api.chat import router as chat_router
+from cocktail_server.api.conversations import router as conversations_router
 from cocktail_server.api.generate import router as generate_router
 from cocktail_server.api.health import router as health_router
 from cocktail_server.api.images import make_images_router
@@ -218,6 +219,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(generate_router)
     app.include_router(chat_router)
+    app.include_router(conversations_router)
     app.include_router(make_images_router(settings.images_dir))
     return app
 

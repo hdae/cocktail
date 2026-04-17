@@ -72,6 +72,24 @@ class ConversationStore:
             raise KeyError(conversation_id)
         return list(session.messages)
 
+    async def get_session(self, conversation_id: str) -> Session:
+        """Session 全体のスナップショットを返す。URL 直開き時の復元に使う。
+
+        `messages` / `generated_images` は list をコピーして返すため、呼び出し側で
+        改変してもストアには波及しない。
+        """
+        session = self._sessions.get(conversation_id)
+        if session is None:
+            raise KeyError(conversation_id)
+        return Session(
+            id=session.id,
+            created_at=session.created_at,
+            updated_at=session.updated_at,
+            messages=list(session.messages),
+            last_image_seed=session.last_image_seed,
+            generated_images=list(session.generated_images),
+        )
+
     async def record_generated_image(self, conversation_id: str, ref: GeneratedImageRef) -> None:
         """画像生成完了時に呼ぶ。ref.seed を last_image_seed に反映し、一覧にも追加する。"""
         session = self._sessions.get(conversation_id)

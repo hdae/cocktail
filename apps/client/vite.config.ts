@@ -8,6 +8,9 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "src"),
+      // shadcn CLI が生成するインポートは `src/...` 形式（tsconfig の baseUrl 前提）。
+      // Vite でも同じ解決規則で動かすためにエイリアスを揃える。
+      src: path.resolve(__dirname, "src"),
     },
   },
   server: {
@@ -16,6 +19,7 @@ export default defineConfig({
     proxy: {
       // サーバは 8000 で動いている。SSE は WebSocket と違って通常の HTTP なのでそのままプロキシ可能。
       "/chat": { target: "http://127.0.0.1:8000", changeOrigin: true },
+      "/conversations": { target: "http://127.0.0.1:8000", changeOrigin: true },
       "/images": { target: "http://127.0.0.1:8000", changeOrigin: true },
       "/generate": { target: "http://127.0.0.1:8000", changeOrigin: true },
       "/health": { target: "http://127.0.0.1:8000", changeOrigin: true },

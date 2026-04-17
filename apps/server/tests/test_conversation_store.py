@@ -204,3 +204,29 @@ async def test_list_all_generated_images_empty_store() -> None:
     items, cursor = await s.list_all_generated_images(limit=10)
     assert items == []
     assert cursor is None
+
+
+@pytest.mark.asyncio
+async def test_get_session_returns_snapshot_with_messages_and_images() -> None:
+    s = ConversationStore()
+    cid = await s.create()
+    await s.append(cid, _msg(cid, "hello", mid="m1"))
+    now = datetime.now(UTC)
+    await s.record_generated_image(
+        cid, _ref(cid, image_id="11111111-1111-1111-1111-111111111111", created_at=now)
+    )
+    snap = await s.get_session(cid)
+    assert snap.id == cid
+    assert [m.id for m in snap.messages] == ["m1"]
+    assert [r.image_id for r in snap.generated_images] == ["11111111-1111-1111-1111-111111111111"]
+    # 返ってきたリストを変更してもストアに波及しない
+    snap.messages.clear()
+    again = await s.get_session(cid)
+    assert len(again.messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_session_raises_for_unknown_id() -> None:
+    s = ConversationStore()
+    with pytest.raises(KeyError):
+        await s.get_session("no-such")

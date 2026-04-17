@@ -12,7 +12,6 @@ import type {
 import { streamChat } from "../lib/sse";
 
 type Status = "idle" | "streaming" | "error";
-export type ViewMode = "chat" | "gallery";
 
 interface PendingToolCall {
   callId: string;
@@ -36,12 +35,11 @@ interface ChatState {
   status: Status;
   error: string | null;
   abort: AbortController | null;
-  view: ViewMode;
   composerDraft: string;
 
   sendMessage: (parts: UserContentPart[]) => Promise<void>;
   reset: () => void;
-  setView: (view: ViewMode) => void;
+  hydrateConversation: (id: string, messages: Message[]) => void;
   setComposerDraft: (draft: string) => void;
 }
 
@@ -52,7 +50,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   status: "idle",
   error: null,
   abort: null,
-  view: "chat",
   composerDraft: "",
 
   reset: () => {
@@ -68,7 +65,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     });
   },
 
-  setView: (view) => set({ view }),
+  hydrateConversation: (id, messages) => {
+    get().abort?.abort();
+    set({
+      conversationId: id,
+      messages,
+      pending: null,
+      status: "idle",
+      error: null,
+      abort: null,
+    });
+  },
+
   setComposerDraft: (composerDraft) => set({ composerDraft }),
 
   sendMessage: async (parts) => {

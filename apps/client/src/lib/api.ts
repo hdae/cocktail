@@ -1,4 +1,6 @@
 import {
+  type ConversationDetail,
+  ConversationDetailSchema,
   type GeneratedImageList,
   GeneratedImageListSchema,
   type ImageUploadResponse,
@@ -33,4 +35,17 @@ export async function listGeneratedImages(
   }
   const json: unknown = await res.json();
   return GeneratedImageListSchema.parse(json);
+}
+
+/** `GET /conversations/{id}` で会話 1 件の詳細（messages + 生成画像メタ）を取得する。 */
+export async function getConversation(id: string): Promise<ConversationDetail> {
+  const res = await fetch(`/conversations/${encodeURIComponent(id)}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Get conversation failed (${res.status}): ${body}`);
+  }
+  const json: unknown = await res.json();
+  return ConversationDetailSchema.parse(json);
 }

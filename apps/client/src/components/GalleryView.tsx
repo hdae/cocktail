@@ -2,12 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 
 import type { GeneratedImageRef } from "@cocktail/api-types";
 
+import { SidebarTrigger } from "@/components/ui/sidebar";
+
 import { listGeneratedImages } from "../lib/api";
-import { useChatStore } from "../store/chat";
 import { GalleryDetailPanel } from "./GalleryDetailPanel";
 
 export function GalleryView(): JSX.Element {
-  const setView = useChatStore((s) => s.setView);
   const [images, setImages] = useState<GeneratedImageRef[]>([]);
   const [nextBefore, setNextBefore] = useState<string | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
@@ -35,19 +35,11 @@ export function GalleryView(): JSX.Element {
 
   return (
     <div className="flex h-full flex-col bg-neutral-950 text-neutral-100">
-      <header className="flex items-center justify-between px-5 py-3">
+      <header className="flex items-center gap-2 px-5 py-3">
+        <SidebarTrigger className="text-neutral-400" />
         <h1 className="text-sm font-semibold tracking-wide text-neutral-200">
           ギャラリー
         </h1>
-        <div className="flex items-center gap-3 text-xs text-neutral-500">
-          <button
-            type="button"
-            onClick={() => setView("chat")}
-            className="rounded-md px-2.5 py-1 text-xs text-neutral-400 transition hover:bg-neutral-900 hover:text-neutral-200"
-          >
-            チャットに戻る
-          </button>
-        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto px-5 pb-5">

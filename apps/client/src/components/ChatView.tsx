@@ -1,51 +1,69 @@
-import { useMemo } from "react";
+import { useNavigate } from "@tanstack/react-router";
+import { useEffect, useMemo } from "react";
+
+import { SidebarTrigger } from "@/components/ui/sidebar";
 
 import { pendingAsMessage, useChatStore } from "../store/chat";
 import { ComposerInput } from "./ComposerInput";
 import { HealthBanner } from "./HealthBanner";
 import { MessageList } from "./MessageList";
 
-export function ChatView(): JSX.Element {
-  const {
-    conversationId,
-    messages,
-    pending,
-    status,
-    error,
-    sendMessage,
-    reset,
-    setView,
-  } = useChatStore();
+interface Props {
+  /** `"new"` = 未開始チャット / UUID = 既存会話（loader が store を hydrate 済み） */
+  conversationId: string;
+}
+
+export function ChatView({ conversationId }: Props): JSX.Element {
+  const navigate = useNavigate();
+  const storeConversationId = useChatStore((s) => s.conversationId);
+  const messages = useChatStore((s) => s.messages);
+  const pending = useChatStore((s) => s.pending);
+  const status = useChatStore((s) => s.status);
+  const error = useChatStore((s) => s.error);
+  const sendMessage = useChatStore((s) => s.sendMessage);
+  const reset = useChatStore((s) => s.reset);
+
+  // `/conversations/new` に入ったら古い会話 state を破棄する。
+  useEffect(() => {
+    if (conversationId === "new" && useChatStore.getState().conversationId !== null) {
+      reset();
+    }
+  }, [conversationId, reset]);
+
+  // 未開始チャットで送信 → サーバが UUID を返した瞬間に URL を差し替える。
+  useEffect(() => {
+    if (conversationId === "new" && storeConversationId !== null) {
+      void navigate({
+        to: "/conversations/$conversationId",
+        params: { conversationId: storeConversationId },
+        replace: true,
+      });
+    }
+  }, [conversationId, storeConversationId, navigate]);
+
+  // 既存会話タブ間で直接遷移した際に store が古い場合、loader が新しい id で hydrate 済み
+  // なので storeConversationId 側を信頼する。表示上の id はどちらも同じ UUID になるはず。
+  const activeConversationId =
+    conversationId === "new" ? storeConversationId : conversationId;
 
   const pendingMessage = useMemo(
-    () => pendingAsMessage(conversationId, pending),
-    [conversationId, pending],
+    () => pendingAsMessage(activeConversationId, pending),
+    [activeConversationId, pending],
   );
 
   return (
     <div className="flex h-full flex-col bg-neutral-950 text-neutral-100">
-      <header className="flex items-center justify-between px-5 py-3">
-        <h1 className="text-sm font-semibold tracking-wide text-neutral-200">
-          Cocktail
-        </h1>
+      <header className="flex items-center justify-between gap-2 px-5 py-3">
+        <div className="flex items-center gap-2">
+          <SidebarTrigger className="text-neutral-400" />
+          <h1 className="text-sm font-semibold tracking-wide text-neutral-200">
+            Cocktail
+          </h1>
+        </div>
         <div className="flex items-center gap-3 text-xs text-neutral-500">
-          {conversationId && (
-            <span className="font-mono">{conversationId.slice(0, 8)}</span>
+          {activeConversationId && (
+            <span className="font-mono">{activeConversationId.slice(0, 8)}</span>
           )}
-          <button
-            type="button"
-            onClick={() => setView("gallery")}
-            className="rounded-md px-2.5 py-1 text-xs text-neutral-400 transition hover:bg-neutral-900 hover:text-neutral-200"
-          >
-            ギャラリー
-          </button>
-          <button
-            type="button"
-            onClick={reset}
-            className="rounded-md px-2.5 py-1 text-xs text-neutral-400 transition hover:bg-neutral-900 hover:text-neutral-200"
-          >
-            新しい会話
-          </button>
         </div>
       </header>
       <MessageList messages={messages} pending={pendingMessage} />

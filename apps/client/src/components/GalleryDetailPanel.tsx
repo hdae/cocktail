@@ -1,3 +1,5 @@
+import { useNavigate } from "@tanstack/react-router";
+
 import type { GeneratedImageRef } from "@cocktail/api-types";
 
 import { useChatStore } from "../store/chat";
@@ -8,12 +10,12 @@ interface Props {
 }
 
 export function GalleryDetailPanel({ image, onClose }: Props): JSX.Element {
-  const setView = useChatStore((s) => s.setView);
+  const navigate = useNavigate();
   const setComposerDraft = useChatStore((s) => s.setComposerDraft);
 
   const sendToComposer = (): void => {
     setComposerDraft(image.prompt_excerpt);
-    setView("chat");
+    void navigate({ to: "/conversations/new" });
     onClose();
   };
 
