@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState, type KeyboardEvent } from "react";
+import { useCallback, type KeyboardEvent } from "react";
 
 import type { UserContentPart } from "@cocktail/api-types";
 
 import { useChatStore } from "../store/chat";
 
 interface Props {
+  /** draft 保存キー。`"new"` = 未開始チャット / UUID = 既存会話。 */
+  conversationId: string;
   disabled?: boolean;
   onSend: (parts: UserContentPart[]) => void;
 }
@@ -12,24 +14,20 @@ interface Props {
 const PLACEHOLDER =
   "生成したい絵の様子を日本語でそのまま書いてください。Cmd/Ctrl + Enter で送信します。";
 
-export function ComposerInput({ disabled, onSend }: Props): JSX.Element {
-  const [text, setText] = useState("");
-  const composerDraft = useChatStore((s) => s.composerDraft);
-  const setComposerDraft = useChatStore((s) => s.setComposerDraft);
-
-  useEffect(() => {
-    if (composerDraft) {
-      setText(composerDraft);
-      setComposerDraft("");
-    }
-  }, [composerDraft, setComposerDraft]);
+export function ComposerInput({
+  conversationId,
+  disabled,
+  onSend,
+}: Props): JSX.Element {
+  const text = useChatStore((s) => s.composerDrafts[conversationId] ?? "");
+  const setDraft = useChatStore((s) => s.setDraft);
 
   const send = useCallback(() => {
     const body = text.trim();
     if (!body) return;
     onSend([{ type: "text", text: body }]);
-    setText("");
-  }, [text, onSend]);
+    setDraft(conversationId, "");
+  }, [text, onSend, setDraft, conversationId]);
 
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -47,7 +45,7 @@ export function ComposerInput({ disabled, onSend }: Props): JSX.Element {
     <div className="flex items-end gap-2">
       <textarea
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => setDraft(conversationId, e.target.value)}
         onKeyDown={onKeyDown}
         placeholder={PLACEHOLDER}
         rows={1}

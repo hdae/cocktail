@@ -11,10 +11,10 @@ interface Props {
 
 export function GalleryDetailPanel({ image, onClose }: Props): JSX.Element {
   const navigate = useNavigate();
-  const setComposerDraft = useChatStore((s) => s.setComposerDraft);
+  const setDraft = useChatStore((s) => s.setDraft);
 
   const sendToComposer = (): void => {
-    setComposerDraft(image.prompt_excerpt);
+    setDraft("new", image.prompt_excerpt);
     void navigate({ to: "/conversations/new" });
     onClose();
   };

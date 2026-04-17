@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { createJSONStorage, persist } from "zustand/middleware";
 
 import type {
   ChatRequest,
@@ -35,80 +36,117 @@ interface ChatState {
   status: Status;
   error: string | null;
   abort: AbortController | null;
-  composerDraft: string;
+  /**
+   * 書きかけ草稿を会話単位で保持する。
+   * key は未開始会話なら "new"、確定済みなら UUID。
+   */
+  composerDrafts: Record<string, string>;
 
   sendMessage: (parts: UserContentPart[]) => Promise<void>;
   reset: () => void;
   hydrateConversation: (id: string, messages: Message[]) => void;
-  setComposerDraft: (draft: string) => void;
+  getDraft: (conversationId: string) => string;
+  setDraft: (conversationId: string, text: string) => void;
+  /** "new" キーの draft を確定した UUID キーへ移し替える（stream 中のリロード保険）。 */
+  promoteDraft: (newConversationId: string) => void;
 }
 
-export const useChatStore = create<ChatState>()((set, get) => ({
-  conversationId: null,
-  messages: [],
-  pending: null,
-  status: "idle",
-  error: null,
-  abort: null,
-  composerDraft: "",
-
-  reset: () => {
-    get().abort?.abort();
-    set({
+export const useChatStore = create<ChatState>()(
+  persist(
+    (set, get) => ({
       conversationId: null,
       messages: [],
       pending: null,
       status: "idle",
       error: null,
       abort: null,
-      composerDraft: "",
-    });
-  },
+      composerDrafts: {},
 
-  hydrateConversation: (id, messages) => {
-    get().abort?.abort();
-    set({
-      conversationId: id,
-      messages,
-      pending: null,
-      status: "idle",
-      error: null,
-      abort: null,
-    });
-  },
+      reset: () => {
+        get().abort?.abort();
+        set({
+          conversationId: null,
+          messages: [],
+          pending: null,
+          status: "idle",
+          error: null,
+          abort: null,
+        });
+      },
 
-  setComposerDraft: (composerDraft) => set({ composerDraft }),
+      hydrateConversation: (id, messages) => {
+        get().abort?.abort();
+        set({
+          conversationId: id,
+          messages,
+          pending: null,
+          status: "idle",
+          error: null,
+          abort: null,
+        });
+      },
 
-  sendMessage: async (parts) => {
-    const prev = get().abort;
-    if (prev) prev.abort();
+      getDraft: (conversationId) => get().composerDrafts[conversationId] ?? "",
 
-    const abort = new AbortController();
-    const conversationId = get().conversationId;
+      setDraft: (conversationId, text) =>
+        set((s) => {
+          if (text === "") {
+            if (!(conversationId in s.composerDrafts)) return {};
+            const { [conversationId]: _drop, ...rest } = s.composerDrafts;
+            return { composerDrafts: rest };
+          }
+          return {
+            composerDrafts: { ...s.composerDrafts, [conversationId]: text },
+          };
+        }),
 
-    const req: ChatRequest = {
-      conversation_id: conversationId,
-      parts,
-      parent_id: null,
-    };
+      promoteDraft: (newConversationId) =>
+        set((s) => {
+          const pending = s.composerDrafts["new"];
+          if (pending === undefined) return {};
+          const { new: _drop, ...rest } = s.composerDrafts;
+          return {
+            composerDrafts: { ...rest, [newConversationId]: pending },
+          };
+        }),
 
-    set({ status: "streaming", error: null, abort, pending: null });
+      sendMessage: async (parts) => {
+        const prev = get().abort;
+        if (prev) prev.abort();
 
-    try {
-      for await (const ev of streamChat(req, abort.signal)) {
-        applyEvent(ev);
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      set({ status: "error", error: msg, abort: null, pending: null });
-      return;
-    }
+        const abort = new AbortController();
+        const conversationId = get().conversationId;
 
-    if (get().status === "streaming") {
-      set({ status: "idle", abort: null });
-    }
-  },
-}));
+        const req: ChatRequest = {
+          conversation_id: conversationId,
+          parts,
+          parent_id: null,
+        };
+
+        set({ status: "streaming", error: null, abort, pending: null });
+
+        try {
+          for await (const ev of streamChat(req, abort.signal)) {
+            applyEvent(ev);
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          set({ status: "error", error: msg, abort: null, pending: null });
+          return;
+        }
+
+        if (get().status === "streaming") {
+          set({ status: "idle", abort: null });
+        }
+      },
+    }),
+    {
+      name: "cocktail:v1",
+      storage: createJSONStorage(() => localStorage),
+      partialize: (state) => ({ composerDrafts: state.composerDrafts }),
+    },
+  ),
+);
 
 function applyEvent(ev: SseEvent): void {
   const setState = useChatStore.setState;

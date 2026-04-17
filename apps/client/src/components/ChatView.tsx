@@ -22,6 +22,7 @@ export function ChatView({ conversationId }: Props): JSX.Element {
   const error = useChatStore((s) => s.error);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const reset = useChatStore((s) => s.reset);
+  const promoteDraft = useChatStore((s) => s.promoteDraft);
 
   // `/conversations/new` に入ったら古い会話 state を破棄する。
   useEffect(() => {
@@ -31,15 +32,17 @@ export function ChatView({ conversationId }: Props): JSX.Element {
   }, [conversationId, reset]);
 
   // 未開始チャットで送信 → サーバが UUID を返した瞬間に URL を差し替える。
+  // 草稿も "new" キーから新 UUID へ移し替え、stream 中のリロードに備える。
   useEffect(() => {
     if (conversationId === "new" && storeConversationId !== null) {
+      promoteDraft(storeConversationId);
       void navigate({
         to: "/conversations/$conversationId",
         params: { conversationId: storeConversationId },
         replace: true,
       });
     }
-  }, [conversationId, storeConversationId, navigate]);
+  }, [conversationId, storeConversationId, navigate, promoteDraft]);
 
   // 既存会話タブ間で直接遷移した際に store が古い場合、loader が新しい id で hydrate 済み
   // なので storeConversationId 側を信頼する。表示上の id はどちらも同じ UUID になるはず。
@@ -76,6 +79,7 @@ export function ChatView({ conversationId }: Props): JSX.Element {
             </div>
           )}
           <ComposerInput
+            conversationId={conversationId}
             disabled={status === "streaming"}
             onSend={(parts) => {
               void sendMessage(parts);
