@@ -1,0 +1,22 @@
+{
+  "name": "cocktail",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "bootstrap": "uv sync && pnpm install",
+    "dev:api": "uv run uvicorn cocktail_server.main:app --host 0.0.0.0 --port 8000 --reload --app-dir apps/server/src",
+    "dev:client": "pnpm --filter @cocktail/client dev",
+    "dev": "concurrently -n api,ui -c cyan,magenta \"pnpm dev:api\" \"pnpm dev:client\"",
+    "test": "uv run pytest",
+    "test:server": "uv run pytest apps/server",
+    "typecheck": "uv run mypy apps/server/src && pnpm -r typecheck",
+    "lint": "uv run ruff check . && uv run ruff format --check .",
+    "format": "uv run ruff format . && uv run ruff check --fix .",
+    "gen-openapi": "uv run python -m cocktail_server.scripts.export_openapi --out packages/api-types/openapi.json",
+    "clean": "find . -type d \\( -name __pycache__ -o -name .mypy_cache -o -name .pytest_cache -o -name .ruff_cache \\) -prune -exec rm -rf {} +"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
