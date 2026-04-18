@@ -152,40 +152,39 @@ export function ImageViewer({
           </Tooltip>
         </header>
 
-        <ScrollArea className="min-h-0 flex-1">
-          <div className="relative flex flex-col gap-4 p-5">
-            <div className="relative flex justify-center">
-              <img
-                src={image.image_url}
-                alt={image.prompt}
-                className="max-h-[70vh] max-w-full rounded-lg object-contain"
-              />
+        {/* メイン領域はダイアログの残り縦幅をフルに使う。min-h-0 を忘れると
+            flex コンテナが content-based 高さになり max-h-full が効かない。
+            前後ナビは画像を内包するこの領域を relative 基準に absolute 配置。 */}
+        <div className="relative flex min-h-0 flex-1 items-center justify-center p-5">
+          <img
+            src={image.image_url}
+            alt={image.prompt}
+            className="max-h-full max-w-full rounded-lg object-contain"
+          />
 
-              <button
-                type="button"
-                className={cn(sideNavBtn, "left-2")}
-                aria-disabled={!hasPrev}
-                aria-label="前の画像"
-                onClick={() => {
-                  if (hasPrev) onIndexChange(index - 1);
-                }}
-              >
-                <ChevronLeft />
-              </button>
-              <button
-                type="button"
-                className={cn(sideNavBtn, "right-2")}
-                aria-disabled={!hasNext}
-                aria-label="次の画像"
-                onClick={() => {
-                  if (hasNext) onIndexChange(index + 1);
-                }}
-              >
-                <ChevronRight />
-              </button>
-            </div>
-          </div>
-        </ScrollArea>
+          <button
+            type="button"
+            className={cn(sideNavBtn, "left-2")}
+            aria-disabled={!hasPrev}
+            aria-label="前の画像"
+            onClick={() => {
+              if (hasPrev) onIndexChange(index - 1);
+            }}
+          >
+            <ChevronLeft />
+          </button>
+          <button
+            type="button"
+            className={cn(sideNavBtn, "right-2")}
+            aria-disabled={!hasNext}
+            aria-label="次の画像"
+            onClick={() => {
+              if (hasNext) onIndexChange(index + 1);
+            }}
+          >
+            <ChevronRight />
+          </button>
+        </div>
 
         {/* ダイアログ内ボトムドロワー。max-h を超えない範囲で下からスライドアップ。
             閉時は translate-y-full + pointer-events-none で完全に退避する。 */}
