@@ -27,6 +27,16 @@ WHEN TO CALL THE TOOL
 - Leave `tool_calls` empty for pure chat (thanks, feedback, questions about a previous image, small talk).
 - Cues that strongly suggest a generation request: 「絵」「イラスト」「描いて」「生成して」, a described scene, or a request to modify the previous image.
 
+CONVERSATION HISTORY & BACK-REFERENCES
+- Each user message is prefixed with a `[Turn N]` tag. The message tagged `[Turn N / current]` is the one you must answer right now; earlier `[Turn K]` messages (K < N) are past turns you may reference.
+- A "turn" is one user message plus the assistant reply that followed it. A pure chat reply (no tool_calls) still counts as a turn. Past assistant replies appear inline as JSON of the same `{reasoning, tool_calls}` shape you produce.
+- When the user refers back with phrases like 「1個前のプロンプト」「2つ前の絵」「さっき」「前回」, resolve the reference by counting from the current turn:
+  - 「さっき」「前回」「1個前」 → Turn (current - 1)
+  - 「2個前」「2つ前」 → Turn (current - 2)
+  - 「n 個前」 → Turn (current - n)
+- To reuse or tweak a past prompt, copy `positive` (and where appropriate `negative` / `aspect_ratio` / `cfg_preset`) from that turn's assistant `tool_calls[0]`, then apply only the changes the user asked for. Do not re-invent details the user said to keep.
+- If the targeted turn had no `tool_calls` (pure chat) or does not exist (user asks "3個前" but only 1 past image-producing pair exists), fall back to the closest older turn that did generate an image, and mention the fallback briefly in `reasoning`.
+
 REASONING FIELD (Japanese, for the user)
 - 1–3 short Japanese sentences summarizing what you are about to generate, or your chat reply.
 - Match the user's register (敬体/常体). Do not paste English tags or the positive prompt here.
@@ -116,6 +126,9 @@ Example 3 — small tweak to the previous image (keep the composition → seed_a
 
 Example 4 — nude request (the user explicitly asked for a nude illustration):
 {"reasoning": "柔らかい朝の光のヌード一枚絵ですね。落ち着いた雰囲気で生成しますね。", "tool_calls": [{"name": "generate_image", "positive": "score_7, masterpiece, best quality, nsfw, highres, newest, 1girl, solo, pink hair, long hair, blue eyes, soft smile, light blush, looking at viewer, upper body, nude, bedroom, window light, soft lighting, detailed background, depth of field, Morning light falls across her bare shoulders as she glances over, a quiet and unguarded intimacy in her expression. Warm skin tones contrast softly with the cool blue light from the window.", "negative": "worst quality, low quality, score_1, score_2, score_3, artist name, censored, mosaic censoring, bar censor, clothes, underwear", "aspect_ratio": "portrait", "cfg_preset": "soft", "seed_action": "new", "rationale": "User asked for nudity; nsfw tag + uncensored/clothing negatives keep the model from hiding or redressing the subject."}]}
+
+Example 5 — back-reference ("1つ前のプロンプトの構図でキャラだけ別の子にして" on the current turn, where Turn 1 generated Example 1's starry-sky cat-girl):
+{"reasoning": "1つ前の構図と背景はそのままに、キャラクターだけ落ち着いた雰囲気の子に差し替えますね。", "tool_calls": [{"name": "generate_image", "positive": "score_7, masterpiece, best quality, safe, highres, newest, 1girl, solo, silver hair, short hair, blue eyes, calm expression, looking at viewer, upper body, white hoodie, oversized clothes, starry sky, milky way, shooting star, night, rim light, depth of field, detailed background, A single comet streaks behind her shoulder as she glances quietly toward the camera. The cool night air softens her pale hair and the sky glows with faint stardust.", "negative": "worst quality, low quality, score_1, score_2, score_3, artist name", "aspect_ratio": "portrait", "cfg_preset": "soft", "seed_action": "new", "rationale": "User referenced Turn 1's composition; kept framing/background/lighting tags and only swapped character-identifying tags (hair, eyes, expression)."}]}
 """
 
 
@@ -123,5 +136,14 @@ def build_system_prompt() -> str:
     return ANIMA_PROMPT_SYSTEM
 
 
-def build_user_message(instruction_ja: str) -> str:
-    return f"User message (Japanese):\n{instruction_ja}\n\nReturn JSON only, no prose."
+def build_user_message(
+    instruction_ja: str, *, turn_index: int, is_current: bool
+) -> str:
+    """Gemma に渡す 1 ユーザーターンの本文を組む。
+
+    各ターンに `[Turn N]` プレフィクスを付け、末尾ターン（=今回応答すべきもの）は
+    `[Turn N / current]` と明示する。Gemma はこのラベルを手掛かりに「n 個前」を
+    current-n として解決する。
+    """
+    marker = f"[Turn {turn_index} / current]" if is_current else f"[Turn {turn_index}]"
+    return f"{marker}\nUser message (Japanese):\n{instruction_ja}\n\nReturn JSON only, no prose."

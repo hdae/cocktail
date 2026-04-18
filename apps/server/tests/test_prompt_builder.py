@@ -80,9 +80,38 @@ def test_system_prompt_instructs_reasoning_in_japanese() -> None:
 
 
 def test_user_message_embeds_instruction_verbatim() -> None:
-    msg = build_user_message("ピンクの髪の猫耳少女が星空の下で微笑んでいる絵")
+    msg = build_user_message(
+        "ピンクの髪の猫耳少女が星空の下で微笑んでいる絵",
+        turn_index=1,
+        is_current=True,
+    )
     assert "ピンクの髪の猫耳少女が星空の下で微笑んでいる絵" in msg
     assert "JSON" in msg
+
+
+def test_user_message_marks_current_turn() -> None:
+    msg = build_user_message("いまのお願い", turn_index=3, is_current=True)
+    assert "[Turn 3 / current]" in msg
+
+
+def test_user_message_past_turn_has_no_current_marker() -> None:
+    msg = build_user_message("昔のお願い", turn_index=1, is_current=False)
+    assert "[Turn 1]" in msg
+    assert "/ current" not in msg
+
+
+def test_system_prompt_describes_back_reference_rules() -> None:
+    p = build_system_prompt()
+    # CONVERSATION HISTORY 節の存在
+    assert "CONVERSATION HISTORY" in p
+    # n 個前 → current - n の対応
+    assert "1個前" in p
+    assert "2個前" in p
+    assert "current - 1" in p
+    assert "current - 2" in p
+    # ラベル仕様
+    assert "[Turn N]" in p
+    assert "[Turn N / current]" in p
 
 
 def test_system_prompt_respects_user_situation() -> None:

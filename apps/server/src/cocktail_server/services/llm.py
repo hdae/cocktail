@@ -161,19 +161,33 @@ def _reconstruct_assistant_spec(msg: Message) -> str:
 def _build_chat_messages(history: list[Message]) -> list[dict[str, Any]]:
     """会話履歴を Gemma の chat_template 入力に変換する。
 
+    各 user メッセージに `[Turn N]` ラベルを埋め、末尾 user には
+    `[Turn N / current]` を付けて「今回応答すべきターン」を明示する。turn は
+    user 発話の出現順で 1 起点。純チャット応答のみだったターンも 1 としてカウント
+    する（case A: user/assistant ペア単位）。
+
     最初のユーザターンにだけシステムプロンプトを埋め込む（Gemma の template は
     system ロールを受け付けないので user メッセージに前置する）。
     """
     if not history:
         raise ValueError("history must contain at least one message")
 
+    last_user_pos = max(
+        (i for i, m in enumerate(history) if m.role == "user"),
+        default=-1,
+    )
+
     messages: list[dict[str, Any]] = []
     first_user_seen = False
     system_prompt = build_system_prompt()
-    for msg in history:
+    turn_index = 0
+    for i, msg in enumerate(history):
         if msg.role == "user":
+            turn_index += 1
             text = _extract_user_text(msg) or "(no text)"
-            user_body = build_user_message(text)
+            user_body = build_user_message(
+                text, turn_index=turn_index, is_current=(i == last_user_pos)
+            )
             if not first_user_seen:
                 content = f"{system_prompt}\n\n{user_body}"
                 first_user_seen = True
