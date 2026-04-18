@@ -87,9 +87,7 @@ def test_multi_turn_user_labels_are_sequential_and_last_is_current() -> None:
     first_user = messages[0]["content"]
     assert isinstance(first_user, str)
     # Turn 1 の user 本文は is_current=False で再現できる
-    assert first_user.endswith(
-        build_user_message("一枚目お願い", turn_index=1, is_current=False)
-    )
+    assert first_user.endswith(build_user_message("一枚目お願い", turn_index=1, is_current=False))
 
     # assistant はラベルなしの JSON 文字列のまま
     assert messages[1]["role"] == "assistant"
@@ -118,9 +116,7 @@ def test_pure_chat_turn_still_counts_as_a_turn() -> None:
     assert messages[0]["content"].endswith(
         build_user_message("最初のお願い", turn_index=1, is_current=False)
     )
-    assert messages[2]["content"] == build_user_message(
-        "次のお願い", turn_index=2, is_current=True
-    )
+    assert messages[2]["content"] == build_user_message("次のお願い", turn_index=2, is_current=True)
 
 
 def test_history_with_assistant_image_still_text_only() -> None:

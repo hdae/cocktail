@@ -136,9 +136,7 @@ def build_system_prompt() -> str:
     return ANIMA_PROMPT_SYSTEM
 
 
-def build_user_message(
-    instruction_ja: str, *, turn_index: int, is_current: bool
-) -> str:
+def build_user_message(instruction_ja: str, *, turn_index: int, is_current: bool) -> str:
     """Gemma に渡す 1 ユーザーターンの本文を組む。
 
     各ターンに `[Turn N]` プレフィクスを付け、末尾ターン（=今回応答すべきもの）は
