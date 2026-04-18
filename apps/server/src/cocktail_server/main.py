@@ -134,7 +134,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     llm = LlmService(
         settings.llm_model_id,
-        images_dir=settings.images_dir,
         weights_dir=settings.weights_dir,
     )
     image_gen = ImageGenService(settings.image_model_id)

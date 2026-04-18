@@ -15,10 +15,8 @@ from typing import Any, Final
 
 import torch
 from json_repair import repair_json
-from PIL import Image as PILImage
 from transformers import (
     AutoModelForCausalLM,
-    AutoProcessor,
     AutoTokenizer,
     BitsAndBytesConfig,
     TextIteratorStreamer,
@@ -26,7 +24,6 @@ from transformers import (
 
 from cocktail_server.schemas.generate import LlmTurnSpec
 from cocktail_server.schemas.messages import (
-    ImagePart,
     Message,
     TextPart,
     ToolCallPart,
@@ -161,66 +158,18 @@ def _reconstruct_assistant_spec(msg: Message) -> str:
     )
 
 
-def _find_last_assistant_image(history: list[Message]) -> str | None:
-    """直前のアシスタントターンに含まれる最新 ImagePart の `image_id` を返す。
-
-    「直前」は history 末尾から手前に遡って最初に見つかる assistant メッセージ。
-    そのメッセージ内に ImagePart が複数あれば最後の 1 件（= 最新）。
-    見つからなければ None。
-    """
-    for msg in reversed(history):
-        if msg.role != "assistant":
-            continue
-        for part in reversed(msg.parts):
-            if isinstance(part, ImagePart):
-                return part.image_id
-        return None
-    return None
-
-
-def _load_image_for_vision(images_dir: Path, image_id: str) -> PILImage.Image | None:
-    """`images_dir` から webp を読み込み RGB に変換。欠落時は WARNING で None を返す。"""
-    path = images_dir / f"{image_id}.webp"
-    if not path.is_file():
-        logger.warning("vision image missing, skipping: %s", path)
-        return None
-    try:
-        img = PILImage.open(path)
-        img.load()
-        return img.convert("RGB")
-    except Exception as exc:
-        logger.warning("failed to load vision image %s: %s", path, exc)
-        return None
-
-
-def _build_chat_messages(
-    history: list[Message],
-    *,
-    images_dir: Path | None = None,
-) -> list[dict[str, Any]]:
+def _build_chat_messages(history: list[Message]) -> list[dict[str, Any]]:
     """会話履歴を Gemma の chat_template 入力に変換する。
 
     最初のユーザターンにだけシステムプロンプトを埋め込む（Gemma の template は
     system ロールを受け付けないので user メッセージに前置する）。
-
-    `images_dir` が渡されれば「直前の assistant ターンが持つ最新 ImagePart」を
-    最後のユーザメッセージに PIL 画像として添付する（processor 経路）。
-    渡されなければ旧来通り text-only で組む（tokenizer 経路）。
     """
     if not history:
         raise ValueError("history must contain at least one message")
 
-    prev_image: PILImage.Image | None = None
-    if images_dir is not None and len(history) >= 2:
-        prior = history[:-1]
-        last_image_id = _find_last_assistant_image(prior)
-        if last_image_id is not None:
-            prev_image = _load_image_for_vision(images_dir, last_image_id)
-
     messages: list[dict[str, Any]] = []
     first_user_seen = False
     system_prompt = build_system_prompt()
-    user_indices: list[int] = []
     for msg in history:
         if msg.role == "user":
             text = _extract_user_text(msg) or "(no text)"
@@ -230,24 +179,10 @@ def _build_chat_messages(
                 first_user_seen = True
             else:
                 content = user_body
-            user_indices.append(len(messages))
             messages.append({"role": "user", "content": content})
         elif msg.role == "assistant":
             messages.append({"role": "assistant", "content": _reconstruct_assistant_spec(msg)})
         # tool / system ロールのメッセージは現状発行していないので無視
-
-    if prev_image is not None and user_indices:
-        # 画像を添付するときは processor 経路で apply_chat_template が回るため、
-        # 全メッセージを list-content 形式に統一する（string/list 混在を受け付けない）
-        for m in messages:
-            if isinstance(m["content"], str):
-                m["content"] = [{"type": "text", "text": m["content"]}]
-        last_idx = user_indices[-1]
-        parts = messages[last_idx]["content"]
-        messages[last_idx]["content"] = [
-            {"type": "image", "image": prev_image},
-            *parts,
-        ]
     return messages
 
 
@@ -277,22 +212,13 @@ def _parse_turn_spec(text: str) -> LlmTurnSpec:
 
 
 class LlmService:
-    """Gemma 4bit 量子化モデルで日本語指示から `LlmTurnSpec` をストリーム生成する。
+    """Gemma 4bit 量子化モデルで日本語指示から `LlmTurnSpec` をストリーム生成する。"""
 
-    vision 対応: AutoProcessor のロードに成功し、1×1 ダミー画像での forward が
-    通れば `_vision_available=True` となり、以降は直前アシスタントの ImagePart を
-    自動添付して処理する。heretic 変異体や未知のロード失敗時は WARNING を出して
-    text-only 経路に退避する。
-    """
-
-    def __init__(self, model_id: str, images_dir: Path, weights_dir: Path) -> None:
+    def __init__(self, model_id: str, weights_dir: Path) -> None:
         self._model_id = model_id
-        self._images_dir = images_dir
         self._weights_dir = weights_dir
         self._model: Any = None
         self._tokenizer: Any = None
-        self._processor: Any = None
-        self._vision_available: bool = False
         self._on_cuda: bool = False
         # 量子化済み weight の CPU RAM 退避バッファ。`evict_to_cpu` で params/buffers の
         # 生バイトを格納し、`load` (warm) で CUDA にコピーして復帰する。bnb の
@@ -302,10 +228,6 @@ class LlmService:
 
     def is_loaded(self) -> bool:
         return self._model is not None and self._on_cuda
-
-    @property
-    def vision_available(self) -> bool:
-        return self._vision_available
 
     def load(self) -> None:
         """モデルを GPU に載せる。初回は量子化キャッシュ（あれば）から直接、無ければ
@@ -343,8 +265,6 @@ class LlmService:
                 # from_pretrained が途中で落ちた場合の部分状態を一掃
                 self._tokenizer = None
                 self._model = None
-                self._processor = None
-                self._vision_available = False
         self._load_from_source(self._model_id, from_cache=False)
         self._save_quantized_cache(cache_dir)
 
@@ -376,18 +296,12 @@ class LlmService:
         t1 = perf_counter_ns()
         self._model = AutoModelForCausalLM.from_pretrained(source, **load_kwargs)
         t2 = perf_counter_ns()
-        # vision probe は `_on_cuda` を True にする前に走らせる（model.generate を
-        # 呼ぶが、この段階では _cold_load 側で未だ True にしていないので probe 内で
-        # run_turn との競合は起きない）
-        self._try_enable_vision(source=source)
-        t3 = perf_counter_ns()
         logger.info(
-            "load llm (cold, %s): tokenizer=%.0f ms, from_pretrained=%.0f ms, vision_probe=%.0f ms, total=%.0f ms",
+            "load llm (cold, %s): tokenizer=%.0f ms, from_pretrained=%.0f ms, total=%.0f ms",
             "cache" if from_cache else "hub",
             (t1 - t0) / 1_000_000,
             (t2 - t1) / 1_000_000,
-            (t3 - t2) / 1_000_000,
-            (t3 - t0) / 1_000_000,
+            (t2 - t0) / 1_000_000,
         )
 
     def _quantized_cache_dir(self) -> Path:
@@ -407,7 +321,7 @@ class LlmService:
         return any(cache_dir.glob("*.safetensors"))
 
     def _save_quantized_cache(self, cache_dir: Path) -> None:
-        """tokenizer + 量子化済みモデル + processor（あれば）をローカルに保存する。
+        """tokenizer + 量子化済みモデルをローカルに保存する。
         transformers は bnb Params4bit を含めて save_pretrained でき、config.json に
         `quantization_config` を埋め込むので、次回ロードは再量子化なしで済む。
         書き出し失敗は警告に留め、推論継続を妨げない。"""
@@ -417,8 +331,6 @@ class LlmService:
             t0 = perf_counter_ns()
             self._tokenizer.save_pretrained(str(cache_dir))
             self._model.save_pretrained(str(cache_dir), safe_serialization=True)
-            if self._processor is not None:
-                self._processor.save_pretrained(str(cache_dir))
             t1 = perf_counter_ns()
             logger.info(
                 "saved quantized cache to %s: %.0f ms",
@@ -427,61 +339,6 @@ class LlmService:
             )
         except Exception as exc:
             logger.warning("failed to save quantized cache to %s: %s", cache_dir, exc)
-
-    def _try_enable_vision(self, *, source: str) -> None:
-        """AutoProcessor をロードし、1×1 ダミー画像で forward を通すまで検証する。
-
-        heretic 派生では multimodal config が残っていても実体が text-only なケースが
-        あり得るため、ロード成功＋推論成功の両方をクリアしないと有効化しない。
-        例外は広めに拾う（transformers の内部エラー種類が変異体ごとに揺れるため）。
-        `source` はモデル本体をロードした先と同じパス／ID を使い、キャッシュ経路で
-        processor ファイルが無い場合は素直にスキップする。
-        """
-        try:
-            self._processor = AutoProcessor.from_pretrained(source)  # type: ignore[no-untyped-call]
-        except Exception as exc:
-            logger.warning("Gemma vision unavailable (processor load failed): %s", exc)
-            self._processor = None
-            self._vision_available = False
-            return
-        try:
-            self._probe_vision()
-        except Exception as exc:
-            logger.warning("Gemma vision unavailable (probe failed): %s", exc)
-            self._processor = None
-            self._vision_available = False
-            return
-        self._vision_available = True
-        logger.info("Gemma vision pipeline enabled")
-
-    def _probe_vision(self) -> None:
-        processor = self._processor
-        model = self._model
-        assert processor is not None and model is not None
-        dummy = PILImage.new("RGB", (1, 1), (0, 0, 0))
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": dummy},
-                    {"type": "text", "text": "ping"},
-                ],
-            }
-        ]
-        inputs = processor.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_tensors="pt",
-            return_dict=True,
-        ).to(model.device)
-        with torch.inference_mode():
-            model.generate(
-                **inputs,
-                max_new_tokens=1,
-                do_sample=False,
-                pad_token_id=self._tokenizer.eos_token_id,
-            )
 
     def evict_to_cpu(self) -> None:
         """量子化済み weight を CPU RAM に常駐させ、VRAM だけを解放する。
@@ -571,12 +428,8 @@ class LlmService:
         t0 = perf_counter_ns()
         del self._model
         del self._tokenizer
-        if self._processor is not None:
-            del self._processor
         self._model = None
         self._tokenizer = None
-        self._processor = None
-        self._vision_available = False
         self._on_cuda = False
         self._cpu_snapshot = None
         gc.collect()
@@ -619,27 +472,11 @@ class LlmService:
         yield LlmTurnComplete(spec=spec)
 
     def _prepare_inputs(self, history: list[Message]) -> Any:
-        """履歴から chat template + tokenize 済みテンソルを作る。
-
-        vision が利用可能で直前アシスタントに画像があれば processor 経路
-        （画像を PIL で同梱）、それ以外は tokenizer 経路（text-only）を選ぶ。
-        """
+        """履歴から chat template + tokenize 済みテンソルを作る。"""
         tokenizer = self._tokenizer
         model = self._model
         assert tokenizer is not None and model is not None
 
-        if self._vision_available and self._processor is not None:
-            messages = _build_chat_messages(history, images_dir=self._images_dir)
-            # 画像が実際に添付されたときのみ processor 経路。それ以外は tokenizer 経路。
-            has_image = any(isinstance(m["content"], list) for m in messages)
-            if has_image:
-                return self._processor.apply_chat_template(
-                    messages,
-                    tokenize=True,
-                    add_generation_prompt=True,
-                    return_tensors="pt",
-                    return_dict=True,
-                ).to(model.device)
         messages = _build_chat_messages(history)
         return tokenizer.apply_chat_template(
             messages,
