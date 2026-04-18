@@ -1,0 +1,45 @@
+# ローカルで RunPod 相当の構成を試すための compose。
+# 本番は RunPod の Template に Dockerfile / イメージと Network Volume を指定して使う。
+#
+# 使い方:
+#   pnpm --filter @cocktail/client build          # 事前に client の dist を用意
+#   docker compose up --build                      # 初回は uv sync で数分かかる
+#   docker compose run --rm cocktail uv sync --frozen  # venv を先に作りたいとき
+#
+# GPU が無い環境で smoke test だけ回したい場合:
+#   STARTUP_PRELOAD=false docker compose up --build
+#   (その場合 `deploy.resources` 以下を docker-compose.override.yml でコメントアウトする)
+
+services:
+  cocktail:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cocktail:latest
+    container_name: cocktail
+    ports:
+      - "${COCKTAIL_PORT:-8000}:8000"
+    volumes:
+      # RunPod の Network Volume 相当。venv / HF キャッシュ / 生成画像をホストに永続化。
+      # named volume を使うと Windows ホストでも pathing の事故が起きない。
+      - cocktail-workspace:/workspace
+    environment:
+      # 有効なキーは apps/server/src/cocktail_server/config.py 参照 (case-insensitive)。
+      CIVITAI_TOKEN: ${CIVITAI_TOKEN:-}
+      STARTUP_PRELOAD: ${STARTUP_PRELOAD:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      RESIDENCY_MODE: ${RESIDENCY_MODE:-auto}
+    # NVIDIA GPU を使う (RunPod, nvidia-container-toolkit 入りのローカル Docker)。
+    # CPU-only でイメージのブート確認だけしたい時は override でここを消す。
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    stop_grace_period: 30s
+    # preload 中断で中途半端な重みが残ると次回起動で落ちる可能性があるため少し長めに。
+
+volumes:
+  cocktail-workspace:
