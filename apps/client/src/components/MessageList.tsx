@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 
 import type { Message } from "@cocktail/api-types";
 
@@ -17,15 +17,50 @@ const EXAMPLES = [
   "雨上がりの街角で、傘を閉じながら歩く女の子。濡れた石畳に街灯の光が反射していて、少し物思いに耽った表情が良いです。",
 ];
 
+// 末尾付近と判定する余裕（ピクセル）。ここを下回るときだけ自動追随する。
+const FOLLOW_THRESHOLD_PX = 96;
+
 export function MessageList({ messages, pending }: Props): JSX.Element {
   const endRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
+  const rendered = pending ? [...messages, pending] : messages;
+  const isEmpty = rendered.length === 0;
+
+  // ScrollArea の Viewport（実際のスクロールコンテナ）を sentinel から逆引きする。
+  // ScrollArea は React 18 の function component で ref を素通ししないため closest を使う。
+  const getViewport = (): HTMLElement | null => {
+    return (
+      endRef.current?.closest<HTMLElement>(
+        '[data-slot="scroll-area-viewport"]',
+      ) ?? null
+    );
+  };
+
+  // メッセージ数や pending の切り替わりで即座に末尾へ寄せる。
+  // useLayoutEffect を使って DOM 反映直後に実行し、描画前に位置を合わせる。
+  useLayoutEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages.length, pending]);
 
-  const rendered = pending ? [...messages, pending] : messages;
-  const isEmpty = rendered.length === 0;
+  // 画像読み込み完了で高さが伸びた際にも末尾を追随する。
+  // Viewport に capture phase で listener を張り、子の <img> の load を横取り。
+  // 「ユーザーが過去を読んでいる途中」は強制しないよう、閾値内にいるときだけ発火。
+  useEffect(() => {
+    const vp = getViewport();
+    if (!vp) return;
+
+    const handleLoad = (ev: Event): void => {
+      const target = ev.target;
+      if (!(target instanceof HTMLImageElement)) return;
+      const nearBottom =
+        vp.scrollHeight - vp.scrollTop - vp.clientHeight < FOLLOW_THRESHOLD_PX;
+      if (!nearBottom) return;
+      endRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+    };
+
+    vp.addEventListener("load", handleLoad, true);
+    return () => vp.removeEventListener("load", handleLoad, true);
+  }, []);
 
   return (
     <ScrollArea className="min-h-0 flex-1 overflow-hidden">

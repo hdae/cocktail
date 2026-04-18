@@ -27,7 +27,6 @@ export function MessagePart({ part }: Props): JSX.Element | null {
               className="h-auto max-h-[400px] w-auto max-w-full rounded-lg transition hover:opacity-95"
               width={part.width ?? undefined}
               height={part.height ?? undefined}
-              loading="lazy"
             />
           </a>
           <div className="flex justify-end">
