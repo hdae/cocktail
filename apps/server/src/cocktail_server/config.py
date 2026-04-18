@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     images_dir: Path = Path("./data/images")
     weights_dir: Path = Path("./data/weights")
 
+    # ビルド済みの Vite dist ディレクトリ。存在する場合のみ SPA を同一オリジンで配信する。
+    # ない時 (dev 起動など) は Vite dev server を別ポートで立てて /api をプロキシする運用。
+    client_dist_dir: Path = Path("./apps/client/dist")
+
     llm_model_id: str = "google/gemma-4-E4B-it"
     # 画像モデルの指定。次のいずれかを受け付ける:
     #   - Civitai AIR(URN): urn:air:... （デフォルト、wai-anima v10）

@@ -5,12 +5,13 @@ import logging
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 
 import torch
 import uvicorn
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from cocktail_server.api.chat import router as chat_router
 from cocktail_server.api.conversations import router as conversations_router
@@ -224,6 +225,37 @@ async def _await_ready_middleware(
     return await call_next(request)
 
 
+def _register_spa(app: FastAPI, dist_dir: Path) -> None:
+    """ビルド済み Vite dist があれば同一オリジンで配信する。API は `/api/*` 配下に
+    固定しているため、catch-all は `api` 以外を捕まえて、実ファイルがあればそれを、
+    なければ `index.html` を返して SPA ルーティングを成立させる。
+    """
+    dist = dist_dir.resolve()
+    index_html = dist / "index.html"
+    if not dist.is_dir() or not index_html.is_file():
+        logger.info("client dist not found at %s; skipping SPA serving", dist)
+        return
+
+    logger.info("serving client SPA from %s", dist)
+
+    @app.get("/{spa_path:path}", include_in_schema=False)
+    async def _spa_fallback(spa_path: str) -> FileResponse:
+        # `/api/*` に落ちてきた未定義ルートは JSON 404 で返す。index.html を返すと
+        # クライアントの fetch が HTML を受け取ってパース失敗する事故が起きる。
+        if spa_path == "api" or spa_path.startswith("api/"):
+            raise HTTPException(status_code=404)
+
+        # path traversal 対策: dist の外を指す path は全部 index.html に丸める。
+        candidate = (dist / spa_path).resolve() if spa_path else index_html
+        try:
+            candidate.relative_to(dist)
+        except ValueError:
+            return FileResponse(index_html)
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(index_html)
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     _configure_logging(settings.log_level)
@@ -245,6 +277,10 @@ def create_app() -> FastAPI:
     app.include_router(chat_router, prefix="/api")
     app.include_router(conversations_router, prefix="/api")
     app.include_router(make_images_router(settings.images_dir), prefix="/api")
+
+    # SPA は API ルート登録の後に付ける。先に catch-all があるとルーティング順で
+    # `/api/*` まで拾ってしまう。
+    _register_spa(app, settings.client_dist_dir)
     return app
 
 

@@ -1,0 +1,49 @@
+# Docker build コンテキストから除外するもの。
+# apps/client/dist は必要なので ignore しない。apps/client/src などは含めない。
+
+# VCS / CI
+.git
+.github
+
+# Python venv / キャッシュ
+.venv
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+*.egg-info
+
+# Node
+**/node_modules
+**/.vite
+**/*.tsbuildinfo
+
+# クライアントはビルド済み dist だけを使う (ソースはコピーしない)。
+apps/client/src
+apps/client/index.html
+apps/client/vite.config.ts
+apps/client/tsconfig.json
+apps/client/eslint.config.js
+apps/client/components.json
+apps/client/package.json
+
+# packages はサーバ実行時に不要。
+packages
+
+# ローカルデータ・重み・画像
+data
+*.safetensors
+*.ckpt
+
+# 環境ファイル (コンテナ側では env var 経由で渡す)
+.env
+.env.*
+
+# IDE / OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Docker 自身のメタは除外しない (Dockerfile, docker/)
