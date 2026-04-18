@@ -4,7 +4,9 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import type {
   ChatRequest,
   ContentPart,
+  GeneratedImageRef,
   ImagePart,
+  ImageReadyEvent,
   Message,
   SseEvent,
   UserContentPart,
@@ -35,6 +37,8 @@ interface ChatState {
   turnId: string | null;
   messages: Message[];
   pending: PendingAssistant | null;
+  /** この会話で生成済みの画像一覧（Viewer のナビ用に順序付きで保持）。 */
+  generatedImages: GeneratedImageRef[];
   status: Status;
   error: string | null;
   abort: AbortController | null;
@@ -46,7 +50,11 @@ interface ChatState {
 
   sendMessage: (parts: UserContentPart[]) => Promise<void>;
   reset: () => void;
-  hydrateConversation: (id: string, messages: Message[]) => void;
+  hydrateConversation: (
+    id: string,
+    messages: Message[],
+    generatedImages: GeneratedImageRef[],
+  ) => void;
   getDraft: (conversationId: string) => string;
   setDraft: (conversationId: string, text: string) => void;
   /** "new" キーの draft を確定した UUID キーへ移し替える（stream 中のリロード保険）。 */
@@ -60,6 +68,7 @@ export const useChatStore = create<ChatState>()(
       turnId: null,
       messages: [],
       pending: null,
+      generatedImages: [],
       status: "idle",
       error: null,
       abort: null,
@@ -72,19 +81,21 @@ export const useChatStore = create<ChatState>()(
           turnId: null,
           messages: [],
           pending: null,
+          generatedImages: [],
           status: "idle",
           error: null,
           abort: null,
         });
       },
 
-      hydrateConversation: (id, messages) => {
+      hydrateConversation: (id, messages, generatedImages) => {
         get().abort?.abort();
         set({
           conversationId: id,
           turnId: null,
           messages,
           pending: null,
+          generatedImages,
           status: "idle",
           error: null,
           abort: null,
@@ -226,7 +237,15 @@ function applyEvent(ev: SseEvent): void {
           width: ev.width,
           height: ev.height,
         };
-        return { pending: { ...s.pending, images: [...s.pending.images, image] } };
+        // 対応する tool_call の args からギャラリーメタを合成する。
+        // image_ready イベントは prompt/seed 等を持たないため、ここで補う。
+        const ref = buildGeneratedImageRef(s, ev);
+        return {
+          pending: { ...s.pending, images: [...s.pending.images, image] },
+          generatedImages: ref
+            ? [...s.generatedImages, ref]
+            : s.generatedImages,
+        };
       });
       return;
     case "tool_call_end":
@@ -264,6 +283,39 @@ function applyEvent(ev: SseEvent): void {
       }
       return;
   }
+}
+
+/**
+ * `image_ready` + 対応する `tool_call_start.args` からギャラリー向けメタを合成する。
+ * 画像生成ツール以外の呼び出しや引数欠落では null を返す。
+ */
+function buildGeneratedImageRef(
+  state: ChatState,
+  ev: ImageReadyEvent,
+): GeneratedImageRef | null {
+  if (!state.conversationId) return null;
+  const args = state.pending?.toolCalls[ev.call_id]?.args ?? {};
+  const prompt = typeof args.positive === "string" ? args.positive : null;
+  const seed = typeof args.seed === "number" ? args.seed : null;
+  const aspect = args.aspect_ratio;
+  const cfg = args.cfg_preset;
+  if (prompt === null || seed === null) return null;
+  if (aspect !== "portrait" && aspect !== "landscape" && aspect !== "square") {
+    return null;
+  }
+  if (cfg !== "soft" && cfg !== "standard" && cfg !== "crisp") return null;
+  return {
+    image_id: ev.image_id,
+    image_url: ev.image_url,
+    conversation_id: state.conversationId,
+    created_at: new Date().toISOString(),
+    prompt,
+    seed,
+    aspect_ratio: aspect,
+    cfg_preset: cfg,
+    width: ev.width,
+    height: ev.height,
+  };
 }
 
 /** `pending` を仮想 `Message` に変換して `MessageList` で扱いやすくする。 */

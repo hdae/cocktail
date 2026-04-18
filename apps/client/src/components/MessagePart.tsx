@@ -4,22 +4,23 @@ import { cn } from "../lib/utils";
 
 interface Props {
   part: ContentPart;
+  onImageClick?: ((imageId: string) => void) | undefined;
 }
 
-export function MessagePart({ part }: Props): JSX.Element | null {
+export function MessagePart({ part, onImageClick }: Props): JSX.Element | null {
   switch (part.type) {
     case "text":
       return <p className="whitespace-pre-wrap leading-relaxed">{part.text}</p>;
     case "image": {
       const src = `/api/images/${part.image_id}.webp`;
+      const imageId = part.image_id;
       return (
         <figure className="mt-1 space-y-2">
-          <a
-            href={src}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="block cursor-zoom-in"
-            title="画像を新しいタブで開く"
+          <button
+            type="button"
+            onClick={() => onImageClick?.(imageId)}
+            className="block cursor-zoom-in outline-none focus-visible:ring-2 focus-visible:ring-neutral-400"
+            title="プレビューを開く"
           >
             <img
               src={src}
@@ -28,7 +29,7 @@ export function MessagePart({ part }: Props): JSX.Element | null {
               width={part.width ?? undefined}
               height={part.height ?? undefined}
             />
-          </a>
+          </button>
           <div className="flex justify-end">
             <a
               href={src}

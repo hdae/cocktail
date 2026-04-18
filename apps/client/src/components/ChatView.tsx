@@ -1,11 +1,12 @@
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { SidebarTrigger } from "@/components/ui/sidebar";
 
 import { pendingAsMessage, useChatStore } from "../store/chat";
 import { ComposerInput } from "./ComposerInput";
 import { HealthBanner } from "./HealthBanner";
+import { ImageViewer } from "./image-viewer/ImageViewer";
 import { MessageList } from "./MessageList";
 
 interface Props {
@@ -18,11 +19,13 @@ export function ChatView({ conversationId }: Props): JSX.Element {
   const storeConversationId = useChatStore((s) => s.conversationId);
   const messages = useChatStore((s) => s.messages);
   const pending = useChatStore((s) => s.pending);
+  const generatedImages = useChatStore((s) => s.generatedImages);
   const status = useChatStore((s) => s.status);
   const error = useChatStore((s) => s.error);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const reset = useChatStore((s) => s.reset);
   const promoteDraft = useChatStore((s) => s.promoteDraft);
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
 
   // `/conversations/new` に入ったら古い会話 state を破棄する。
   useEffect(() => {
@@ -75,7 +78,14 @@ export function ChatView({ conversationId }: Props): JSX.Element {
           )}
         </div>
       </header>
-      <MessageList messages={messages} pending={pendingMessage} />
+      <MessageList
+        messages={messages}
+        pending={pendingMessage}
+        onImageClick={(imageId) => {
+          const idx = generatedImages.findIndex((g) => g.image_id === imageId);
+          if (idx >= 0) setViewerIndex(idx);
+        }}
+      />
       <div className="bg-neutral-950 px-5 pb-5 pt-2">
         <div className="mx-auto flex max-w-5xl flex-col gap-2">
           <HealthBanner />
@@ -93,6 +103,15 @@ export function ChatView({ conversationId }: Props): JSX.Element {
           />
         </div>
       </div>
+
+      {viewerIndex !== null && generatedImages[viewerIndex] && (
+        <ImageViewer
+          images={generatedImages}
+          index={viewerIndex}
+          onIndexChange={setViewerIndex}
+          onClose={() => setViewerIndex(null)}
+        />
+      )}
     </div>
   );
 }

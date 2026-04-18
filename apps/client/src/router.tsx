@@ -54,7 +54,9 @@ const existingConversationRoute = createRoute({
     }
     try {
       const detail = await getConversation(params.conversationId);
-      useChatStore.getState().hydrateConversation(detail.id, detail.messages);
+      useChatStore
+        .getState()
+        .hydrateConversation(detail.id, detail.messages, detail.generated_images);
       return detail;
     } catch (err) {
       // サーバ再起動等で会話が消えていた場合は新規会話画面に戻す。

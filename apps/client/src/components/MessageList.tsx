@@ -9,6 +9,7 @@ import { ScrollArea } from "./ui/scroll-area";
 interface Props {
   messages: Message[];
   pending: Message | null;
+  onImageClick?: ((imageId: string) => void) | undefined;
 }
 
 const EXAMPLES = [
@@ -20,7 +21,7 @@ const EXAMPLES = [
 // 末尾付近と判定する余裕（ピクセル）。ここを下回るときだけ自動追随する。
 const FOLLOW_THRESHOLD_PX = 96;
 
-export function MessageList({ messages, pending }: Props): JSX.Element {
+export function MessageList({ messages, pending, onImageClick }: Props): JSX.Element {
   const endRef = useRef<HTMLDivElement | null>(null);
 
   const rendered = pending ? [...messages, pending] : messages;
@@ -91,7 +92,9 @@ export function MessageList({ messages, pending }: Props): JSX.Element {
             </ul>
           </div>
         ) : (
-          rendered.map((m) => <MessageRow key={m.id} message={m} />)
+          rendered.map((m) => (
+            <MessageRow key={m.id} message={m} onImageClick={onImageClick} />
+          ))
         )}
         <div ref={endRef} />
       </div>
@@ -99,7 +102,13 @@ export function MessageList({ messages, pending }: Props): JSX.Element {
   );
 }
 
-function MessageRow({ message }: { message: Message }): JSX.Element {
+function MessageRow({
+  message,
+  onImageClick,
+}: {
+  message: Message;
+  onImageClick?: ((imageId: string) => void) | undefined;
+}): JSX.Element {
   const isUser = message.role === "user";
   return (
     <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
@@ -112,7 +121,7 @@ function MessageRow({ message }: { message: Message }): JSX.Element {
         )}
       >
         {message.parts.map((part, i) => (
-          <MessagePart key={i} part={part} />
+          <MessagePart key={i} part={part} onImageClick={onImageClick} />
         ))}
       </div>
     </div>
