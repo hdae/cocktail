@@ -171,6 +171,8 @@ def _build_chat_messages(history: list[Message]) -> list[dict[str, Any]]:
     """
     if not history:
         raise ValueError("history must contain at least one message")
+    if history[0].role != "user":
+        raise ValueError("history must begin with a user message")
 
     last_user_pos = max(
         (i for i, m in enumerate(history) if m.role == "user"),

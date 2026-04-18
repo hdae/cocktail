@@ -130,3 +130,9 @@ def test_history_with_assistant_image_still_text_only() -> None:
 def test_empty_history_raises() -> None:
     with pytest.raises(ValueError, match="at least one message"):
         _build_chat_messages([])
+
+
+def test_history_starting_with_assistant_raises() -> None:
+    image_id = "11111111-1111-1111-1111-111111111111"
+    with pytest.raises(ValueError, match="begin with a user message"):
+        _build_chat_messages([_assistant_with_image(image_id)])
