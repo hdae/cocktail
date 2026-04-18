@@ -1,5 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { SidebarTrigger } from "@/components/ui/sidebar";
 
@@ -58,10 +58,7 @@ export function ChatView({ conversationId }: Props): JSX.Element {
   const activeConversationId =
     conversationId === "new" ? storeConversationId : conversationId;
 
-  const pendingMessage = useMemo(
-    () => pendingAsMessage(activeConversationId, pending),
-    [activeConversationId, pending],
-  );
+  const pendingMessage = pendingAsMessage(activeConversationId, pending);
 
   return (
     <div className="flex h-full flex-col bg-neutral-950 text-neutral-100">
