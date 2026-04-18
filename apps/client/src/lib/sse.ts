@@ -83,8 +83,9 @@ export async function* subscribeTurn(
 
   try {
     while (true) {
-      if (queue.length > 0) {
-        yield queue.shift()!;
+      const next = queue.shift();
+      if (next !== undefined) {
+        yield next;
         continue;
       }
       if (done) break;
