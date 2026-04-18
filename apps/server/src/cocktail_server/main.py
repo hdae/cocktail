@@ -92,6 +92,13 @@ async def _run_preload(
             manager.set_status("llm", "loading")
             await asyncio.to_thread(llm.load)
             manager.set_status("llm", "loaded")
+            if policy == "swap":
+                # 量子化コストをここで払い切り、以降の LLM 呼び出しを CPU→CUDA
+                # memcpy のみで済ませる。スナップショットを作ってから VRAM を解放し、
+                # 起動直後も常に swap（warm load）経路で動く状態に揃える。
+                logger.info("snapshotting LLM to CPU (swap mode)")
+                await asyncio.to_thread(llm.evict_to_cpu)
+                manager.set_status("llm", "idle")
 
         if policy == "coresident":
             logger.info("preloading Image pipeline (coresident)…")
@@ -125,7 +132,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.residency_coresident_threshold_gb,
     )
 
-    llm = LlmService(settings.llm_model_id, images_dir=settings.images_dir)
+    llm = LlmService(
+        settings.llm_model_id,
+        images_dir=settings.images_dir,
+        weights_dir=settings.weights_dir,
+    )
     image_gen = ImageGenService(settings.image_model_id)
     manager = ModelManager(policy=policy)
     conversations = ConversationStore()

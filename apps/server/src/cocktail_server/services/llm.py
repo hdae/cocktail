@@ -5,6 +5,7 @@ import gc
 import json
 import logging
 import re
+import shutil
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,20 +14,14 @@ from time import perf_counter_ns
 from typing import Any, Final
 
 import torch
+from json_repair import repair_json
 from PIL import Image as PILImage
-from torchao.quantization import Int4WeightOnlyConfig  # type: ignore[import-untyped]
-from torchao.quantization.quantize_.workflows.int4.int4_choose_qparams_algorithm import (  # type: ignore[import-untyped]
-    Int4ChooseQParamsAlgorithm,
-)
-from torchao.quantization.quantize_.workflows.int4.int4_packing_format import (  # type: ignore[import-untyped]
-    Int4PackingFormat,
-)
 from transformers import (
     AutoModelForCausalLM,
     AutoProcessor,
     AutoTokenizer,
+    BitsAndBytesConfig,
     TextIteratorStreamer,
-    TorchAoConfig,
 )
 
 from cocktail_server.schemas.generate import LlmTurnSpec
@@ -257,10 +252,27 @@ def _build_chat_messages(
 
 
 def _parse_turn_spec(text: str) -> LlmTurnSpec:
+    # Gemma の生出力はデバッグに必須（trailing comma や片側クォートなど破綻パターンの同定用）
+    logger.info("Gemma raw output: %r", text)
     match = _JSON_OBJECT_RE.search(text)
     if match is None:
         raise ValueError(f"No JSON object found in model output: {text!r}")
-    data = json.loads(match.group(0))
+    raw = match.group(0)
+    try:
+        data: Any = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        repaired, repair_log = repair_json(raw, return_objects=True, logging=True)
+        logger.warning(
+            "json.loads failed (%s); json_repair applied %d fix(es): %s",
+            exc,
+            len(repair_log),
+            repair_log,
+        )
+        if not isinstance(repaired, dict):
+            raise ValueError(
+                f"json_repair did not yield an object (got {type(repaired).__name__}): {raw!r}"
+            ) from exc
+        data = repaired
     return LlmTurnSpec.model_validate(data)
 
 
@@ -273,14 +285,20 @@ class LlmService:
     text-only 経路に退避する。
     """
 
-    def __init__(self, model_id: str, images_dir: Path) -> None:
+    def __init__(self, model_id: str, images_dir: Path, weights_dir: Path) -> None:
         self._model_id = model_id
         self._images_dir = images_dir
+        self._weights_dir = weights_dir
         self._model: Any = None
         self._tokenizer: Any = None
         self._processor: Any = None
         self._vision_available: bool = False
         self._on_cuda: bool = False
+        # 量子化済み weight の CPU RAM 退避バッファ。`evict_to_cpu` で params/buffers の
+        # 生バイトを格納し、`load` (warm) で CUDA にコピーして復帰する。bnb の
+        # Linear4bit は `.to("cpu")` が再量子化相当の挙動になるため、.data 直接
+        # 書き換えで量子化コストを完全に迂回する。
+        self._cpu_snapshot: dict[str, torch.Tensor] | None = None
 
     def is_loaded(self) -> bool:
         return self._model is not None and self._on_cuda
@@ -290,57 +308,137 @@ class LlmService:
         return self._vision_available
 
     def load(self) -> None:
-        """モデルを GPU に載せる。初回は bf16 ロード + on-the-fly torchao 量子化、
-        2 回目以降は CPU→CUDA 転送のみ。"""
+        """モデルを GPU に載せる。初回は量子化キャッシュ（あれば）から直接、無ければ
+        bf16 ロード + on-the-fly bnb NF4 量子化 + キャッシュ書き出し。2 回目以降は
+        CPU スナップショット → CUDA の memcpy のみで再量子化も再読み出しも走らない。"""
         if self._model is not None and self._on_cuda:
             return
         if self._model is None:
-            logger.info("Loading Gemma model: %s", self._model_id)
-            # torchao int4 は tensor subclass 方式で `.to()` 互換。bnb と違って
-            # CPU ↔ CUDA の往復が安定するため、swap 用途に向く。
-            quant_config = TorchAoConfig(
-                quant_type=Int4WeightOnlyConfig(
-                    group_size=128,
-                    int4_packing_format=Int4PackingFormat.TILE_PACKED_TO_4D,
-                    int4_choose_qparams_algorithm=Int4ChooseQParamsAlgorithm.TINYGEMM,
-                ),
-            )
-            t0 = perf_counter_ns()
-            self._tokenizer = AutoTokenizer.from_pretrained(self._model_id)
-            t1 = perf_counter_ns()
-            self._model = AutoModelForCausalLM.from_pretrained(
-                self._model_id,
-                quantization_config=quant_config,
-                torch_dtype=torch.bfloat16,
-                device_map={"": 0},
-            )
-            t2 = perf_counter_ns()
+            self._cold_load()
             self._on_cuda = True
-            self._try_enable_vision()
-            t3 = perf_counter_ns()
-            logger.info(
-                "load llm (cold): tokenizer=%.0f ms, from_pretrained=%.0f ms, vision_probe=%.0f ms, total=%.0f ms",
-                (t1 - t0) / 1_000_000,
-                (t2 - t1) / 1_000_000,
-                (t3 - t2) / 1_000_000,
-                (t3 - t0) / 1_000_000,
-            )
             return
+        # Warm 復帰: CPU snapshot から CUDA に memcpy。
+        assert self._cpu_snapshot is not None, "warm load without snapshot"
         t0 = perf_counter_ns()
-        self._model.to("cuda")
+        self._restore_from_snapshot()
         t1 = perf_counter_ns()
         self._on_cuda = True
-        logger.info("load llm (warm): to_cuda=%.0f ms", (t1 - t0) / 1_000_000)
+        logger.info("load llm (warm): restore=%.0f ms", (t1 - t0) / 1_000_000)
 
-    def _try_enable_vision(self) -> None:
+    def _cold_load(self) -> None:
+        """ディスクから weight を取得して GPU に配置する。キャッシュ優先、失敗時は
+        HF hub から再量子化してキャッシュを作り直す。"""
+        cache_dir = self._quantized_cache_dir()
+        if self._cache_valid(cache_dir):
+            try:
+                self._load_from_source(str(cache_dir), from_cache=True)
+                return
+            except Exception as exc:
+                logger.warning(
+                    "quantized cache load failed (%s); purging %s and falling back to hub",
+                    exc,
+                    cache_dir,
+                )
+                shutil.rmtree(cache_dir, ignore_errors=True)
+                # from_pretrained が途中で落ちた場合の部分状態を一掃
+                self._tokenizer = None
+                self._model = None
+                self._processor = None
+                self._vision_available = False
+        self._load_from_source(self._model_id, from_cache=False)
+        self._save_quantized_cache(cache_dir)
+
+    def _load_from_source(self, source: str, *, from_cache: bool) -> None:
+        """`source` はキャッシュディレクトリ or HF モデル ID。キャッシュからは既に
+        量子化済みの weight をそのまま読み込むため、BitsAndBytesConfig は渡さない。
+        （saved config.json の `quantization_config` を transformers 側が再利用する）"""
+        # NF4 は正規分布前提の非一様コードブック + 二重量子化で、構造トークン
+        # （JSON 区切り等の稀頻度トークン）を壊しにくい。小型 Gemma の tail
+        # 誤差を抑えるため int4 線形グリッドではなく NF4 を採用。
+        load_kwargs: dict[str, Any] = {
+            "torch_dtype": torch.bfloat16,
+            "device_map": {"": 0},
+        }
+        if not from_cache:
+            load_kwargs["quantization_config"] = BitsAndBytesConfig(  # type: ignore[no-untyped-call]
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+            )
+        logger.info(
+            "Loading Gemma model from %s (%s)",
+            source,
+            "pre-quantized cache" if from_cache else "HF hub + on-the-fly NF4 quantization",
+        )
+        t0 = perf_counter_ns()
+        self._tokenizer = AutoTokenizer.from_pretrained(source)
+        t1 = perf_counter_ns()
+        self._model = AutoModelForCausalLM.from_pretrained(source, **load_kwargs)
+        t2 = perf_counter_ns()
+        # vision probe は `_on_cuda` を True にする前に走らせる（model.generate を
+        # 呼ぶが、この段階では _cold_load 側で未だ True にしていないので probe 内で
+        # run_turn との競合は起きない）
+        self._try_enable_vision(source=source)
+        t3 = perf_counter_ns()
+        logger.info(
+            "load llm (cold, %s): tokenizer=%.0f ms, from_pretrained=%.0f ms, vision_probe=%.0f ms, total=%.0f ms",
+            "cache" if from_cache else "hub",
+            (t1 - t0) / 1_000_000,
+            (t2 - t1) / 1_000_000,
+            (t3 - t2) / 1_000_000,
+            (t3 - t0) / 1_000_000,
+        )
+
+    def _quantized_cache_dir(self) -> Path:
+        """`weights_dir/llm-nf4/<slug>` を返す。slug はモデル ID のスラッシュ置換。
+        モデル ID が変われば別ディレクトリになるので古いキャッシュと競合しない。"""
+        slug = self._model_id.replace("/", "--").replace(":", "--")
+        return self._weights_dir / "llm-nf4" / slug
+
+    @staticmethod
+    def _cache_valid(cache_dir: Path) -> bool:
+        """config.json と少なくとも 1 つの safetensors シャードがあれば有効とみなす。
+        壊れている場合は `from_pretrained` 側で例外になり、`_cold_load` が掃除する。"""
+        if not cache_dir.is_dir():
+            return False
+        if not (cache_dir / "config.json").is_file():
+            return False
+        return any(cache_dir.glob("*.safetensors"))
+
+    def _save_quantized_cache(self, cache_dir: Path) -> None:
+        """tokenizer + 量子化済みモデル + processor（あれば）をローカルに保存する。
+        transformers は bnb Params4bit を含めて save_pretrained でき、config.json に
+        `quantization_config` を埋め込むので、次回ロードは再量子化なしで済む。
+        書き出し失敗は警告に留め、推論継続を妨げない。"""
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            assert self._tokenizer is not None and self._model is not None
+            t0 = perf_counter_ns()
+            self._tokenizer.save_pretrained(str(cache_dir))
+            self._model.save_pretrained(str(cache_dir), safe_serialization=True)
+            if self._processor is not None:
+                self._processor.save_pretrained(str(cache_dir))
+            t1 = perf_counter_ns()
+            logger.info(
+                "saved quantized cache to %s: %.0f ms",
+                cache_dir,
+                (t1 - t0) / 1_000_000,
+            )
+        except Exception as exc:
+            logger.warning("failed to save quantized cache to %s: %s", cache_dir, exc)
+
+    def _try_enable_vision(self, *, source: str) -> None:
         """AutoProcessor をロードし、1×1 ダミー画像で forward を通すまで検証する。
 
         heretic 派生では multimodal config が残っていても実体が text-only なケースが
         あり得るため、ロード成功＋推論成功の両方をクリアしないと有効化しない。
         例外は広めに拾う（transformers の内部エラー種類が変異体ごとに揺れるため）。
+        `source` はモデル本体をロードした先と同じパス／ID を使い、キャッシュ経路で
+        processor ファイルが無い場合は素直にスキップする。
         """
         try:
-            self._processor = AutoProcessor.from_pretrained(self._model_id)  # type: ignore[no-untyped-call]
+            self._processor = AutoProcessor.from_pretrained(source)  # type: ignore[no-untyped-call]
         except Exception as exc:
             logger.warning("Gemma vision unavailable (processor load failed): %s", exc)
             self._processor = None
@@ -386,13 +484,22 @@ class LlmService:
             )
 
     def evict_to_cpu(self) -> None:
-        """モデルを CPU RAM に退避させ、VRAM を解放する。torchao int4 の tensor subclass は
-        `.to("cpu")` が安全に動く（bnb と違いカーネル再初期化が要らない）。"""
+        """量子化済み weight を CPU RAM に常駐させ、VRAM だけを解放する。
+        初回は CPU へ完全コピー（snapshot 作成）、以降は GPU storage の解放のみ。
+        推論では重みが更新されないため、snapshot は作り直さず再利用して
+        毎 swap の GPU→CPU memcpy を省く。bnb Params4bit の `.to("cpu")` は
+        再量子化相当のコストが走るため使わず、`.data` を空テンソルに差し替える。"""
         if self._model is None or not self._on_cuda:
             return
-        logger.info("Evicting Gemma model to CPU")
         t0 = perf_counter_ns()
-        self._model.to("cpu")
+        if self._cpu_snapshot is None:
+            logger.info("Snapshotting Gemma model to CPU (first evict)")
+            self._snapshot_to_cpu()
+            phase = "snapshot"
+        else:
+            logger.info("Releasing Gemma GPU storage (snapshot retained)")
+            self._release_gpu_storage()
+            phase = "release"
         t1 = perf_counter_ns()
         gc.collect()
         t2 = perf_counter_ns()
@@ -401,12 +508,60 @@ class LlmService:
         t3 = perf_counter_ns()
         self._on_cuda = False
         logger.info(
-            "evict llm: to_cpu=%.0f ms, gc=%.0f ms, empty_cache=%.0f ms, total=%.0f ms",
+            "evict llm: %s=%.0f ms, gc=%.0f ms, empty_cache=%.0f ms, total=%.0f ms",
+            phase,
             (t1 - t0) / 1_000_000,
             (t2 - t1) / 1_000_000,
             (t3 - t2) / 1_000_000,
             (t3 - t0) / 1_000_000,
         )
+
+    def _snapshot_to_cpu(self) -> None:
+        """全 parameter / buffer の生バイトを CPU tensor として保持し、元の GPU
+        storage は `torch.empty(0)` に差し替えて解放する。Params4bit は `.data`
+        が packed uint8 のためそのまま CPU copy すれば復帰時に再量子化不要。
+        `quant_state` は bnb 側の `.to("cpu")` を使って CPU に移す。"""
+        assert self._model is not None
+        snapshot: dict[str, torch.Tensor] = {}
+        for name, param in self._model.named_parameters():
+            snapshot[f"p:{name}"] = param.data.detach().to("cpu", copy=True)
+            qs = getattr(param, "quant_state", None)
+            if qs is not None:
+                qs.to("cpu")  # QuantState は in-place で全フィールドを移動
+            param.data = torch.empty(0, dtype=param.data.dtype, device="cuda")
+        for name, buf in self._model.named_buffers():
+            snapshot[f"b:{name}"] = buf.detach().to("cpu", copy=True)
+            buf.data = torch.empty(0, dtype=buf.data.dtype, device="cuda")
+        self._cpu_snapshot = snapshot
+
+    def _release_gpu_storage(self) -> None:
+        """既に CPU snapshot がある状態で、GPU 側の storage だけを解放する。
+        重みは inference-only で不変なので CPU コピーは不要。"""
+        assert self._model is not None and self._cpu_snapshot is not None
+        for param in self._model.parameters():
+            qs = getattr(param, "quant_state", None)
+            if qs is not None:
+                qs.to("cpu")
+            param.data = torch.empty(0, dtype=param.data.dtype, device="cuda")
+        for buf in self._model.buffers():
+            buf.data = torch.empty(0, dtype=buf.data.dtype, device="cuda")
+
+    def _restore_from_snapshot(self) -> None:
+        """`_snapshot_to_cpu` で退避した生バイトを CUDA に戻す。`quant_state` も
+        同じ順序で `.to("cuda")` して bnb カーネルから参照可能な状態に戻す。
+        snapshot 自体は保持し、次回 evict を「GPU 解放のみ」で終わらせる。"""
+        assert self._model is not None and self._cpu_snapshot is not None
+        snapshot = self._cpu_snapshot
+        for name, param in self._model.named_parameters():
+            cpu_data = snapshot[f"p:{name}"]
+            param.data = cpu_data.to("cuda", non_blocking=True)
+            qs = getattr(param, "quant_state", None)
+            if qs is not None:
+                qs.to("cuda")
+        for name, buf in self._model.named_buffers():
+            buf.data = snapshot[f"b:{name}"].to("cuda", non_blocking=True)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
 
     def unload(self) -> None:
         """モデルを完全破棄する。プロセス終了時・障害復旧用。"""
@@ -423,6 +578,7 @@ class LlmService:
         self._processor = None
         self._vision_available = False
         self._on_cuda = False
+        self._cpu_snapshot = None
         gc.collect()
         t1 = perf_counter_ns()
         if torch.cuda.is_available():
