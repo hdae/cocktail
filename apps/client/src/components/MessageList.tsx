@@ -109,7 +109,7 @@ function MessageRow({
         )}
       >
         {message.parts.map((part, i) => (
-          <MessagePart key={i} part={part} onImageClick={onImageClick} />
+          <MessagePart key={`${part.type}-${i}`} part={part} onImageClick={onImageClick} />
         ))}
       </div>
     </div>
