@@ -57,7 +57,7 @@ export function AppSidebar(): JSX.Element {
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel>Cocktail</SidebarGroupLabel>
-          <SidebarMenu>
+          <SidebarMenu className="gap-2">
             {NAV_ITEMS.map((item) => {
               const prefix = item.matchPrefix ?? item.to;
               const isActive = pathname === item.to || pathname.startsWith(`${prefix}/`);

@@ -28,7 +28,7 @@ export function MessageList({ messages, pending }: Props): JSX.Element {
   const isEmpty = rendered.length === 0;
 
   return (
-    <ScrollArea className="flex-1">
+    <ScrollArea className="min-h-0 flex-1 overflow-hidden">
       <div
         className={cn(
           "mx-auto flex max-w-5xl flex-col gap-5 px-5 py-8",

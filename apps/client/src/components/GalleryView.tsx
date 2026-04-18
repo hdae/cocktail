@@ -66,7 +66,7 @@ export function GalleryView(): JSX.Element {
         </h1>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-5 pb-5">
+      <div className="flex-1 overflow-y-auto px-5 pt-1 pb-5">
         {error && (
           <div className="mb-3 rounded-md bg-red-950/40 px-3 py-2 text-xs text-red-200">
             {error}
