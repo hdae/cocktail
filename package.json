@@ -11,7 +11,7 @@
     "test": "uv run pytest",
     "test:server": "uv run pytest apps/server",
     "typecheck": "uv run mypy apps/server/src && pnpm -r typecheck",
-    "lint": "uv run ruff check . && uv run ruff format --check .",
+    "lint": "uv run ruff check . && uv run ruff format --check . && pnpm -r lint",
     "format": "uv run ruff format . && uv run ruff check --fix .",
     "gen-openapi": "uv run python -m cocktail_server.scripts.export_openapi --out packages/api-types/openapi.json",
     "clean": "find . -type d \\( -name __pycache__ -o -name .mypy_cache -o -name .pytest_cache -o -name .ruff_cache \\) -prune -exec rm -rf {} +"
