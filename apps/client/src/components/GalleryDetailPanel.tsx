@@ -1,9 +1,18 @@
-import { useNavigate } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useNavigate } from "@tanstack/react-router"
+import { ChevronLeft, ChevronRight, Download, Wand2, X } from "lucide-react"
+import { useEffect } from "react"
 
-import type { GeneratedImageRef } from "@cocktail/api-types";
+import type { GeneratedImageRef } from "@cocktail/api-types"
 
-import { useChatStore } from "../store/chat";
+import { ScrollArea } from "@/components/ui/scroll-area"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import { cn } from "@/lib/utils"
+
+import { useChatStore } from "../store/chat"
 
 interface Props {
   images: GeneratedImageRef[];
@@ -11,6 +20,17 @@ interface Props {
   onIndexChange: (index: number) => void;
   onClose: () => void;
 }
+
+// ヘッダー内の各アイコンボタン共通クラス。TooltipTrigger を直接 button 化して、
+// render prop を二重に挟まないことで cloneElement 経由の props 合流を安定させる。
+const iconBtn = cn(
+  "inline-flex size-7 items-center justify-center rounded-md text-neutral-300",
+  "outline-none transition hover:bg-neutral-800 hover:text-neutral-100",
+  "focus-visible:ring-2 focus-visible:ring-neutral-500",
+  "disabled:pointer-events-none disabled:opacity-40",
+  "aria-disabled:cursor-not-allowed aria-disabled:opacity-40",
+  "[&_svg]:size-4",
+);
 
 export function GalleryDetailPanel({
   images,
@@ -53,85 +73,119 @@ export function GalleryDetailPanel({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-6"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
       onClick={onClose}
     >
+      {/* 高さは max-h ではなく h で確定値を与える。max-h だと flex コンテナの
+          高さが content-based になり、flex-1 な ScrollArea が 0 に潰れて
+          Viewport の overflow: scroll が効かなくなる。 */}
       <div
-        className="relative flex max-h-full w-full max-w-4xl flex-col gap-4 overflow-y-auto rounded-xl bg-neutral-900 p-5 text-neutral-100"
+        className="flex h-[calc(100svh-3rem)] w-full max-w-4xl flex-col overflow-hidden rounded-xl bg-neutral-900 text-neutral-100"
         onClick={(e) => e.stopPropagation()}
       >
-        <button
-          type="button"
-          onClick={onClose}
-          className="absolute right-3 top-3 rounded-md px-2 py-1 text-xs text-neutral-400 transition hover:bg-neutral-800 hover:text-neutral-200"
-          aria-label="閉じる"
-        >
-          閉じる
-        </button>
+        <header className="flex shrink-0 items-center gap-1 border-b border-neutral-800 px-3 py-2">
+          <Tooltip>
+            <TooltipTrigger
+              className={iconBtn}
+              onClick={usePrompt}
+              aria-label="このプロンプトを使う"
+            >
+              <Wand2 />
+            </TooltipTrigger>
+            <TooltipContent>このプロンプトを使う</TooltipContent>
+          </Tooltip>
 
-        <div className="relative flex justify-center">
-          <img
-            src={image.image_url}
-            alt={image.prompt}
-            className="max-h-[70vh] max-w-full rounded-lg object-contain"
-          />
-          <button
-            type="button"
-            onClick={() => onIndexChange(index - 1)}
-            disabled={!hasPrev}
-            aria-label="前の画像"
-            className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/50 px-3 py-2 text-lg text-neutral-100 transition hover:bg-black/70 disabled:cursor-not-allowed disabled:opacity-20"
-          >
-            ‹
-          </button>
-          <button
-            type="button"
-            onClick={() => onIndexChange(index + 1)}
-            disabled={!hasNext}
-            aria-label="次の画像"
-            className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/50 px-3 py-2 text-lg text-neutral-100 transition hover:bg-black/70 disabled:cursor-not-allowed disabled:opacity-20"
-          >
-            ›
-          </button>
-        </div>
+          <Tooltip>
+            <TooltipTrigger
+              className={iconBtn}
+              aria-label="ダウンロード"
+              render={
+                <a
+                  href={image.image_url}
+                  download={`${image.image_id}.webp`}
+                />
+              }
+            >
+              <Download />
+            </TooltipTrigger>
+            <TooltipContent>ダウンロード</TooltipContent>
+          </Tooltip>
 
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-xs text-neutral-300">
-          <dt className="text-neutral-500">prompt</dt>
-          <dd className="whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-neutral-200">
-            {image.prompt}
-          </dd>
-          <dt className="text-neutral-500">seed</dt>
-          <dd className="font-mono">{image.seed}</dd>
-          <dt className="text-neutral-500">aspect</dt>
-          <dd>
-            {image.aspect_ratio} ({image.width}×{image.height})
-          </dd>
-          <dt className="text-neutral-500">cfg</dt>
-          <dd>{image.cfg_preset}</dd>
-          <dt className="text-neutral-500">created</dt>
-          <dd className="font-mono text-[11px]">{image.created_at}</dd>
-          <dt className="text-neutral-500">conversation</dt>
-          <dd className="font-mono text-[11px]">
-            {image.conversation_id.slice(0, 8)}
-          </dd>
-        </dl>
+          <div className="flex-1" />
 
-        <div className="flex justify-end gap-2">
-          <a
-            href={image.image_url}
-            download={`${image.image_id}.webp`}
-            className="rounded-md bg-neutral-800 px-3 py-1.5 text-xs font-medium text-neutral-100 transition hover:bg-neutral-700"
-          >
-            ダウンロード
-          </a>
-          <button
-            type="button"
-            onClick={usePrompt}
-            className="rounded-md bg-neutral-100 px-3 py-1.5 text-xs font-medium text-neutral-900 transition hover:bg-white"
-          >
-            このプロンプトを使う
-          </button>
-        </div>
+          <Tooltip>
+            <TooltipTrigger
+              className={iconBtn}
+              aria-disabled={!hasPrev}
+              onClick={() => {
+                if (hasPrev) onIndexChange(index - 1);
+              }}
+              aria-label="前の画像"
+            >
+              <ChevronLeft />
+            </TooltipTrigger>
+            <TooltipContent>前の画像</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              className={iconBtn}
+              aria-disabled={!hasNext}
+              onClick={() => {
+                if (hasNext) onIndexChange(index + 1);
+              }}
+              aria-label="次の画像"
+            >
+              <ChevronRight />
+            </TooltipTrigger>
+            <TooltipContent>次の画像</TooltipContent>
+          </Tooltip>
+
+          <div className="flex-1" />
+
+          <Tooltip>
+            <TooltipTrigger
+              className={iconBtn}
+              onClick={onClose}
+              aria-label="閉じる"
+            >
+              <X />
+            </TooltipTrigger>
+            <TooltipContent>閉じる</TooltipContent>
+          </Tooltip>
+        </header>
+
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="flex flex-col gap-4 p-5">
+            <div className="flex justify-center">
+              <img
+                src={image.image_url}
+                alt={image.prompt}
+                className="max-h-[60vh] max-w-full rounded-lg object-contain"
+              />
+            </div>
+
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-xs text-neutral-300">
+              <dt className="text-neutral-500">prompt</dt>
+              <dd className="whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-neutral-200">
+                {image.prompt}
+              </dd>
+              <dt className="text-neutral-500">seed</dt>
+              <dd className="font-mono">{image.seed}</dd>
+              <dt className="text-neutral-500">aspect</dt>
+              <dd>
+                {image.aspect_ratio} ({image.width}×{image.height})
+              </dd>
+              <dt className="text-neutral-500">cfg</dt>
+              <dd>{image.cfg_preset}</dd>
+              <dt className="text-neutral-500">created</dt>
+              <dd className="font-mono text-[11px]">{image.created_at}</dd>
+              <dt className="text-neutral-500">conversation</dt>
+              <dd className="font-mono text-[11px]">
+                {image.conversation_id.slice(0, 8)}
+              </dd>
+            </dl>
+          </div>
+        </ScrollArea>
       </div>
     </div>
   );
