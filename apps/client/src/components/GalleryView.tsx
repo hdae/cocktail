@@ -6,7 +6,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 
 import { listGeneratedImages } from "../lib/api";
 import { streamImageEvents } from "../lib/sse";
-import { GalleryDetailPanel } from "./GalleryDetailPanel";
+import { ImageViewer } from "./image-viewer/ImageViewer";
 
 export function GalleryView(): JSX.Element {
   const [images, setImages] = useState<GeneratedImageRef[]>([]);
@@ -111,7 +111,7 @@ export function GalleryView(): JSX.Element {
       </div>
 
       {selectedIndex !== null && images[selectedIndex] && (
-        <GalleryDetailPanel
+        <ImageViewer
           images={images}
           index={selectedIndex}
           onIndexChange={setSelectedIndex}

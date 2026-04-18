@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 
-import { useChatStore } from "../store/chat"
+import { useChatStore } from "../../store/chat"
 
 interface Props {
   images: GeneratedImageRef[];
@@ -32,7 +32,7 @@ const iconBtn = cn(
   "[&_svg]:size-4",
 );
 
-export function GalleryDetailPanel({
+export function ImageViewer({
   images,
   index,
   onIndexChange,
