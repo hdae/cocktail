@@ -1,16 +1,14 @@
 import path from "node:path";
 
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "src"),
-      // shadcn CLI が生成するインポートは `src/...` 形式（tsconfig の baseUrl 前提）。
-      // Vite でも同じ解決規則で動かすためにエイリアスを揃える。
-      src: path.resolve(__dirname, "src"),
     },
   },
   server: {

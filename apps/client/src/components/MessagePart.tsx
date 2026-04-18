@@ -1,6 +1,6 @@
 import type { ContentPart, ToolCallPart } from "@cocktail/api-types";
 
-import { cn } from "../lib/cn";
+import { cn } from "../lib/utils";
 
 interface Props {
   part: ContentPart;

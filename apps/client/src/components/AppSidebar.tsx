@@ -64,11 +64,13 @@ export function AppSidebar(): JSX.Element {
               const Icon = item.icon;
               return (
                 <SidebarMenuItem key={item.to}>
-                  <SidebarMenuButton asChild isActive={isActive} tooltip={item.label}>
-                    <Link to={item.to}>
-                      <Icon />
-                      <span>{item.label}</span>
-                    </Link>
+                  <SidebarMenuButton
+                    render={<Link to={item.to} />}
+                    isActive={isActive}
+                    tooltip={item.label}
+                  >
+                    <Icon />
+                    <span>{item.label}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               );

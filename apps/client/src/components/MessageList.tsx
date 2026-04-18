@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 
 import type { Message } from "@cocktail/api-types";
 
-import { cn } from "../lib/cn";
+import { cn } from "../lib/utils";
 import { MessagePart } from "./MessagePart";
 import { ScrollArea } from "./ui/scroll-area";
 
