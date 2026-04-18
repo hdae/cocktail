@@ -10,7 +10,7 @@ import { AppShell } from "./components/AppShell";
 import { ChatView } from "./components/ChatView";
 import { GalleryView } from "./components/GalleryView";
 import { HistoryView } from "./components/HistoryView";
-import { getConversation } from "./lib/api";
+import { ApiError, getConversation } from "./lib/api";
 import { useChatStore } from "./store/chat";
 
 /**
@@ -52,9 +52,19 @@ const existingConversationRoute = createRoute({
     if (state.conversationId === params.conversationId) {
       return null;
     }
-    const detail = await getConversation(params.conversationId);
-    useChatStore.getState().hydrateConversation(detail.id, detail.messages);
-    return detail;
+    try {
+      const detail = await getConversation(params.conversationId);
+      useChatStore.getState().hydrateConversation(detail.id, detail.messages);
+      return detail;
+    } catch (err) {
+      // サーバ再起動等で会話が消えていた場合は新規会話画面に戻す。
+      // 永続化が入れば解消するが、それまでの保険。
+      if (err instanceof ApiError && err.status === 404) {
+        useChatStore.getState().reset();
+        throw redirect({ to: "/conversations/new" });
+      }
+      throw err;
+    }
   },
   component: function ExistingConversationRoute() {
     const { conversationId } = existingConversationRoute.useParams();

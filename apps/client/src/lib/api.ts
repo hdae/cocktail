@@ -16,6 +16,20 @@ import {
 
 const ConversationSummaryListSchema = z.array(ConversationSummarySchema);
 
+/**
+ * API 呼び出しが HTTP エラーを返したときに投げる。
+ * `status` を見てルーター loader で 404 → redirect のような分岐ができる。
+ */
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 /** `POST /images` で 1 枚アップロードし、`image_id` を受け取る。 */
 export async function uploadImage(file: File): Promise<ImageUploadResponse> {
   const form = new FormData();
@@ -82,7 +96,7 @@ export async function getConversation(id: string): Promise<ConversationDetail> {
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`Get conversation failed (${res.status}): ${body}`);
+    throw new ApiError(res.status, `Get conversation failed (${res.status}): ${body}`);
   }
   const json: unknown = await res.json();
   return ConversationDetailSchema.parse(json);
