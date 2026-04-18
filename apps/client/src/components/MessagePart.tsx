@@ -25,6 +25,7 @@ export function MessagePart({ part, onImageClick }: Props): JSX.Element | null {
             <img
               src={src}
               alt=""
+              loading="lazy"
               className="h-auto max-h-[400px] w-auto max-w-full rounded-lg transition hover:opacity-95"
               width={part.width ?? undefined}
               height={part.height ?? undefined}
