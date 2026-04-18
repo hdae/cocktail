@@ -1,6 +1,6 @@
 import { useNavigate } from "@tanstack/react-router"
-import { ChevronLeft, ChevronRight, Download, Wand2, X } from "lucide-react"
-import { useEffect } from "react"
+import { ChevronLeft, ChevronRight, Download, Info, Wand2, X } from "lucide-react"
+import { useEffect, useState } from "react"
 
 import type { GeneratedImageRef } from "@cocktail/api-types"
 
@@ -32,6 +32,17 @@ const iconBtn = cn(
   "[&_svg]:size-4",
 );
 
+// 画像左右に重ねる前後ナビ。大きめヒットエリア + 半透明背景で視認性を確保。
+const sideNavBtn = cn(
+  "absolute top-1/2 -translate-y-1/2 z-10",
+  "inline-flex size-10 items-center justify-center rounded-full",
+  "bg-neutral-900/70 text-neutral-200 backdrop-blur",
+  "outline-none transition hover:bg-neutral-800 hover:text-neutral-50",
+  "focus-visible:ring-2 focus-visible:ring-neutral-500",
+  "aria-disabled:pointer-events-none aria-disabled:opacity-30",
+  "[&_svg]:size-5",
+);
+
 export function ImageViewer({
   images,
   index,
@@ -40,13 +51,13 @@ export function ImageViewer({
 }: Props): JSX.Element | null {
   const navigate = useNavigate();
   const setDraft = useChatStore((s) => s.setDraft);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const image = images[index];
   const hasPrev = index > 0;
   const hasNext = index < images.length - 1;
 
-  // ←/→ で前後移動、Esc で閉じる。モーダル内に入力欄は無いので無条件に
-  // document で受ける。開いてる間だけ listener を張る。
+  // ←/→ で前後移動。Esc は Drawer が開いていれば Drawer を先に閉じる。
   useEffect(() => {
     const handler = (e: KeyboardEvent): void => {
       if (e.key === "ArrowLeft" && hasPrev) {
@@ -56,12 +67,16 @@ export function ImageViewer({
         e.preventDefault();
         onIndexChange(index + 1);
       } else if (e.key === "Escape") {
-        onClose();
+        if (detailsOpen) {
+          setDetailsOpen(false);
+        } else {
+          onClose();
+        }
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [index, hasPrev, hasNext, onIndexChange, onClose]);
+  }, [index, hasPrev, hasNext, onIndexChange, onClose, detailsOpen]);
 
   if (!image) return null;
 
@@ -80,7 +95,7 @@ export function ImageViewer({
           高さが content-based になり、flex-1 な ScrollArea が 0 に潰れて
           Viewport の overflow: scroll が効かなくなる。 */}
       <div
-        className="flex h-[calc(100svh-3rem)] w-full max-w-4xl flex-col overflow-hidden rounded-xl bg-neutral-900 text-neutral-100"
+        className="relative flex h-[calc(100svh-3rem)] w-full max-w-4xl flex-col overflow-hidden rounded-xl bg-neutral-900 text-neutral-100"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex shrink-0 items-center gap-1 border-b border-neutral-800 px-3 py-2">
@@ -111,33 +126,16 @@ export function ImageViewer({
             <TooltipContent>ダウンロード</TooltipContent>
           </Tooltip>
 
-          <div className="flex-1" />
-
           <Tooltip>
             <TooltipTrigger
-              className={iconBtn}
-              aria-disabled={!hasPrev}
-              onClick={() => {
-                if (hasPrev) onIndexChange(index - 1);
-              }}
-              aria-label="前の画像"
+              className={cn(iconBtn, detailsOpen && "bg-neutral-800 text-neutral-100")}
+              onClick={() => setDetailsOpen((v) => !v)}
+              aria-label="詳細を表示"
+              aria-expanded={detailsOpen}
             >
-              <ChevronLeft />
+              <Info />
             </TooltipTrigger>
-            <TooltipContent>前の画像</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger
-              className={iconBtn}
-              aria-disabled={!hasNext}
-              onClick={() => {
-                if (hasNext) onIndexChange(index + 1);
-              }}
-              aria-label="次の画像"
-            >
-              <ChevronRight />
-            </TooltipTrigger>
-            <TooltipContent>次の画像</TooltipContent>
+            <TooltipContent>詳細</TooltipContent>
           </Tooltip>
 
           <div className="flex-1" />
@@ -155,16 +153,68 @@ export function ImageViewer({
         </header>
 
         <ScrollArea className="min-h-0 flex-1">
-          <div className="flex flex-col gap-4 p-5">
-            <div className="flex justify-center">
+          <div className="relative flex flex-col gap-4 p-5">
+            <div className="relative flex justify-center">
               <img
                 src={image.image_url}
                 alt={image.prompt}
-                className="max-h-[60vh] max-w-full rounded-lg object-contain"
+                className="max-h-[70vh] max-w-full rounded-lg object-contain"
               />
-            </div>
 
-            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-xs text-neutral-300">
+              <button
+                type="button"
+                className={cn(sideNavBtn, "left-2")}
+                aria-disabled={!hasPrev}
+                aria-label="前の画像"
+                onClick={() => {
+                  if (hasPrev) onIndexChange(index - 1);
+                }}
+              >
+                <ChevronLeft />
+              </button>
+              <button
+                type="button"
+                className={cn(sideNavBtn, "right-2")}
+                aria-disabled={!hasNext}
+                aria-label="次の画像"
+                onClick={() => {
+                  if (hasNext) onIndexChange(index + 1);
+                }}
+              >
+                <ChevronRight />
+              </button>
+            </div>
+          </div>
+        </ScrollArea>
+
+        {/* ダイアログ内ボトムドロワー。max-h を超えない範囲で下からスライドアップ。
+            閉時は translate-y-full + pointer-events-none で完全に退避する。 */}
+        <div
+          role="region"
+          aria-label="画像の詳細"
+          aria-hidden={!detailsOpen}
+          className={cn(
+            "absolute inset-x-0 bottom-0 z-10 flex max-h-[50%] flex-col",
+            "border-t border-neutral-800 bg-neutral-900/95 backdrop-blur",
+            "transition-transform duration-200 ease-out",
+            detailsOpen ? "translate-y-0" : "pointer-events-none translate-y-full",
+          )}
+        >
+          <div className="flex shrink-0 items-center justify-between border-b border-neutral-800 px-4 py-2">
+            <span className="text-xs font-medium tracking-wide text-neutral-300">
+              詳細
+            </span>
+            <button
+              type="button"
+              className={iconBtn}
+              onClick={() => setDetailsOpen(false)}
+              aria-label="詳細を閉じる"
+            >
+              <X />
+            </button>
+          </div>
+          <ScrollArea className="min-h-0 flex-1">
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 px-4 py-3 text-xs text-neutral-300">
               <dt className="text-neutral-500">prompt</dt>
               <dd className="whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-neutral-200">
                 {image.prompt}
@@ -184,8 +234,8 @@ export function ImageViewer({
                 {image.conversation_id.slice(0, 8)}
               </dd>
             </dl>
-          </div>
-        </ScrollArea>
+          </ScrollArea>
+        </div>
       </div>
     </div>
   );
