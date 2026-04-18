@@ -165,6 +165,7 @@ export function ImageViewer({
           <button
             type="button"
             className={cn(sideNavBtn, "left-2")}
+            disabled={!hasPrev}
             aria-disabled={!hasPrev}
             aria-label="前の画像"
             onClick={() => {
@@ -176,6 +177,7 @@ export function ImageViewer({
           <button
             type="button"
             className={cn(sideNavBtn, "right-2")}
+            disabled={!hasNext}
             aria-disabled={!hasNext}
             aria-label="次の画像"
             onClick={() => {
