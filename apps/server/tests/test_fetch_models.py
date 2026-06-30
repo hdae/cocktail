@@ -19,6 +19,7 @@ from cocktail_server.scripts.fetch_models import (
 
 # autouse フィクスチャで差し替えるため、実関数の参照を import 時に確保しておく。
 _REAL_ENSURE_IMAGE_BASE = fetch_models._ensure_image_base
+_REAL_ENSURE_LLM = fetch_models._ensure_llm
 
 
 @pytest.fixture(autouse=True)
@@ -35,7 +36,7 @@ def _settings(tmp_path: Path) -> Settings:
         hf_home=tmp_path / "models",
         images_dir=tmp_path / "images",
         weights_dir=tmp_path / "weights",
-        llm_model_id="google/gemma-4-E4B-it",
+        llm_model_id="igorls/gemma-4-12B-it-heretic-GGUF:gemma-4-12B-it-heretic-Q4_K_M.gguf",
         image_model_id="urn:air:anima:checkpoint:civitai:2544636@2983680",
         civitai_token=None,
     )
@@ -301,3 +302,39 @@ def test_civitai_401_hints_at_token(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(FetchError, match="CIVITAI_TOKEN"):
         ensure_all(settings)
+
+
+def test_parse_gguf_ref_forms(tmp_path: Path) -> None:
+    from cocktail_server.services.llm import parse_gguf_ref
+
+    # repo:filename 形式 → 分解
+    assert parse_gguf_ref("org/repo:model-Q4_K_M.gguf") == ("org/repo", "model-Q4_K_M.gguf")
+    # filename 無しの素のリポ ID → None（ローカル扱い）
+    assert parse_gguf_ref("org/repo") is None
+    # 実在するローカル .gguf パス → None（パスとしてそのまま使う）
+    local = tmp_path / "m.gguf"
+    local.write_bytes(b"x")
+    assert parse_gguf_ref(str(local)) is None
+
+
+def test_ensure_llm_downloads_gguf_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(tmp_path)
+    calls: list[dict[str, Any]] = []
+
+    def fake_hf_download(**kwargs: Any) -> str:
+        calls.append(kwargs)
+        return str(tmp_path / "x.gguf")
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_hf_download)
+    _REAL_ENSURE_LLM(settings)
+    assert calls and calls[0]["repo_id"] == "igorls/gemma-4-12B-it-heretic-GGUF"
+    assert calls[0]["filename"] == "gemma-4-12B-it-heretic-Q4_K_M.gguf"
+
+
+def test_ensure_llm_rejects_non_gguf(tmp_path: Path) -> None:
+    # GGUF でも実在ローカルパスでもない指定は拒否する。
+    settings = _settings(tmp_path).model_copy(update={"llm_model_id": "google/gemma-4-E4B-it"})
+    with pytest.raises(FetchError, match="gguf"):
+        _REAL_ENSURE_LLM(settings)

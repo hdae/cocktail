@@ -127,6 +127,17 @@ Gemma が喋り、ツール呼び出しの引数も自分で選ぶようにし�
 - [x] `/health` に `residency_policy` / `vram_total_gb` / `vram_free_gb` を追加
 - [x] チャット画像プレビューの最大高を 400px に制限
 
+### 技術スタック更新（M1d 後）
+
+起動骨格の完成後に、ランタイムを実機(RTX 5070Ti / Blackwell sm_120)で最適化:
+
+- **画像生成**: 非公式 `hdae/diffusers-anima` → 公式 diffusers の Anima modular
+  pipeline。派生(WAI-Anima)は DiT 単体をメモリ内変換してベースに差し込む。
+- **LLM**: Transformers + bitsandbytes(Gemma 4 E4B) → llama.cpp(GGUF)。Blackwell では
+  Transformers/torchao の int4 カーネルが動かず公式 QAT/MTP も頓挫したため、成熟した
+  llama.cpp へ移行。既定は無検閲 Gemma 4 12B(Q4_K_M) で decode ~5x・同 VRAM・無検閲。
+  CUDA は sm_120 でソースビルド（Dockerfile builder ステージ / cudart は torch 同梱分を流用）。
+
 ## M2: 画像メモリ + ギャラリー + シードツール化（次の最優先）
 
 **なぜここか**: Gemma

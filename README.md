@@ -6,7 +6,7 @@
 
 - **Server**: FastAPI + uvicorn（`uv` workspace、Python 3.12）
 - **Client**: React + Vite + shadcn-ui（`pnpm` workspace）
-- **LLM**: Gemma 4 E4B（Transformers + bitsandbytes 4bit）
+- **LLM**: Gemma 4 12B heretic（llama.cpp / GGUF Q4、無検閲・日本語）。Blackwell(sm_120) では CUDA 有効でソースビルド
 - **画像生成**: 公式 [diffusers](https://github.com/huggingface/diffusers) の Anima modular pipeline（bfloat16）。派生(WAI-Anima)は DiT 単体をメモリ内変換してベースに差し込む
 
 ## 現在のマイルストーン
@@ -34,7 +34,7 @@ pnpm dev
 
 起動時の挙動:
 
-1. `LLM_MODEL_ID` の HF リポを `snapshot_download` で取得
+1. `LLM_MODEL_ID`（GGUF）を取得（`repo:file.gguf` なら該当ファイルのみ、ローカル .gguf なら存在確認）
 2. `IMAGE_BASE_MODEL_ID`（Anima ベースの diffusers リポ）を `snapshot_download` で取得
 3. `IMAGE_MODEL_ID`（派生 DiT 単体）を取得
    - `urn:air:...` なら Civitai API で解決し `${WEIGHTS_DIR}/civitai/{slug}-{sha256[:12]}.{ext}` に配置

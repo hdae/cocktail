@@ -17,7 +17,20 @@ mkdir -p /workspace
 
 if [ "${SKIP_UV_SYNC:-0}" != "1" ]; then
     echo "[entrypoint] uv sync --frozen (env=${UV_PROJECT_ENVIRONMENT:-.venv})"
-    uv sync --frozen
+    # llama-cpp-python は lock 上 sdist のみ。素の uv sync はそれを CPU ビルドしようとし、
+    # runtime にはコンパイラが無いため失敗する。よって llama だけ除外して sync し、builder が
+    # 焼いた CUDA(sm_120) ビルド済み wheel を直接インストールする。
+    uv sync --frozen --no-install-package llama-cpp-python
+    installed=0
+    for whl in /opt/wheels/llama_cpp_python-*.whl; do
+        [ -e "$whl" ] || continue
+        echo "[entrypoint] installing CUDA llama-cpp-python wheel: $whl"
+        uv pip install --python "${UV_PROJECT_ENVIRONMENT:-/app/.venv}/bin/python" "$whl"
+        installed=1
+    done
+    if [ "$installed" = "0" ]; then
+        echo "[entrypoint] WARNING: /opt/wheels に CUDA llama wheel が無い — LLM は動作しません" >&2
+    fi
 fi
 
 # uv run でなく venv の python を直接使う。uv run は毎回 sync するので無駄な I/O。

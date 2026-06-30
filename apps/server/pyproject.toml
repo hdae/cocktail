@@ -14,9 +14,11 @@ dependencies = [
     "torchvision>=0.21",
     "transformers>=4.51",
     "accelerate>=1.0",
-    "bitsandbytes>=0.43",
-    # Gemma QAT(w4a16-ct, int4 事前量子化)の読込に必要
-    "compressed-tensors",
+    # LLM(日本語→画像プロンプト JSON)は llama.cpp(GGUF)で動かす。Blackwell(sm_120)では
+    # PyPI/事前ビルド wheel の CUDA カーネルが動かないため、CUDA 有効でソースビルドが要る:
+    #   CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=120" uv sync
+    # ランタイムの CUDA ライブラリ(cudart/cublas)は torch 同梱のものを RTLD で先読みする。
+    "llama-cpp-python>=0.3.0",
     # Anima 単体チェックポイントを変換ロードするため safetensors を直接利用
     "safetensors>=0.4",
     # Anima は公式 diffusers に modular pipeline として入ったが未リリースのため

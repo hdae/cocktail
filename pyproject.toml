@@ -49,8 +49,8 @@ explicit_package_bases = true
 
 [[tool.mypy.overrides]]
 module = [
-    "bitsandbytes.*",
-    "compressed_tensors.*",
+    "llama_cpp.*",
+    "nvidia.*",
     "transformers.*",
     "accelerate.*",
 ]

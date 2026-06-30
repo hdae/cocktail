@@ -1,26 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import gc
 import json
 import logging
 import re
-import shutil
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Thread
 from time import perf_counter_ns
 from typing import Any, Final
 
-import torch
 from json_repair import repair_json
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    BitsAndBytesConfig,
-    TextIteratorStreamer,
-)
+from pydantic import ValidationError
 
 from cocktail_server.schemas.generate import LlmTurnSpec
 from cocktail_server.schemas.messages import (
@@ -38,6 +32,11 @@ logger = logging.getLogger(__name__)
 
 _JSON_OBJECT_RE: Final[re.Pattern[str]] = re.compile(r"\{[\s\S]*\}")
 _REASONING_START_RE: Final[re.Pattern[str]] = re.compile(r'"reasoning"\s*:\s*"')
+
+# GGUF 推論パラメータ。max_tokens は JSON 1 ターン分。n_ctx はシステムプロンプト
+# (~3.4k tok) + 数ターンの履歴を見込んだ余裕。
+_MAX_TOKENS: Final[int] = 1024
+_N_CTX: Final[int] = 8192
 
 
 @dataclass(frozen=True)
@@ -106,10 +105,30 @@ def _decode_partial_reasoning(all_text: str) -> tuple[str, bool]:
                     break
                 hexchars = all_text[i + 2 : i + 6]
                 try:
-                    out.append(chr(int(hexchars, 16)))
+                    code = int(hexchars, 16)
                 except ValueError:
                     out.append("\\u" + hexchars)
-                i += 6
+                    i += 6
+                else:
+                    if 0xD800 <= code <= 0xDBFF:
+                        # 上位サロゲート。非 BMP 文字(絵文字・稀な漢字)は \uXXXX\uYYYY の
+                        # ペアで来るので、続く \uDCxx と結合して 1 コードポイントにする。
+                        # 単独で emit すると lone surrogate になり SSE の UTF-8 encode で落ちる。
+                        if i + 11 >= n or all_text[i + 6 : i + 8] != "\\u":
+                            break  # 下位サロゲートがまだ/不完全 → 保留して次回再解決
+                        try:
+                            low = int(all_text[i + 8 : i + 12], 16)
+                        except ValueError:
+                            low = 0
+                        if 0xDC00 <= low <= 0xDFFF:
+                            out.append(chr(0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)))
+                            i += 12
+                        else:
+                            out.append(chr(code))
+                            i += 6
+                    else:
+                        out.append(chr(code))
+                        i += 6
             else:
                 out.append(nc)
                 i += 2
@@ -227,238 +246,119 @@ def _parse_turn_spec(text: str) -> LlmTurnSpec:
     return LlmTurnSpec.model_validate(data)
 
 
-class LlmService:
-    """Gemma 4bit 量子化モデルで日本語指示から `LlmTurnSpec` をストリーム生成する。"""
+def parse_gguf_ref(model_id: str) -> tuple[str, str] | None:
+    """`LLM_MODEL_ID` を GGUF 参照として解釈する。
 
-    def __init__(self, model_id: str, weights_dir: Path) -> None:
+    `"org/repo:weights.gguf"` 形式なら `(repo_id, filename)` を返す。ローカルの
+    `.gguf` パスやその他の形式は `None`（呼び出し側がローカルパスとして扱う）。
+    """
+    if Path(model_id).expanduser().is_file():
+        return None
+    if ":" in model_id:
+        repo, _, filename = model_id.rpartition(":")
+        if "/" in repo and filename.endswith(".gguf"):
+            return (repo, filename)
+    return None
+
+
+def _preload_cuda_runtime() -> None:
+    """libllama.so が要求する CUDA ランタイム(cudart/cublas)を torch 同梱の nvidia
+    パッケージから `RTLD_GLOBAL` で先読みする。
+
+    こうしておくと llama.cpp の CUDA バックエンドが、別途 `LD_LIBRARY_PATH` を
+    通さなくても依存シンボルを解決できる（cuBLAS は cuBLASLt に依存するので順序厳守）。
+    ベストエフォート: 見つからなければ何もしない（ビルドが静的 or LD パスが既に通っている等）。
+    """
+    try:
+        import nvidia
+    except ImportError:
+        return
+    bases = [Path(p) for p in getattr(nvidia, "__path__", [])]
+    for sub, name in (
+        ("cublas", "libcublasLt.so.12"),
+        ("cublas", "libcublas.so.12"),
+        ("cuda_runtime", "libcudart.so.12"),
+    ):
+        for base in bases:
+            lib = base / sub / "lib" / name
+            if lib.is_file():
+                with suppress(OSError):
+                    ctypes.CDLL(str(lib), mode=ctypes.RTLD_GLOBAL)
+                break
+
+
+class LlmService:
+    """GGUF 量子化 Gemma を llama.cpp(llama-cpp-python) で動かし、日本語指示から
+    `LlmTurnSpec` をストリーム生成する。
+
+    全層 GPU offload(`n_gpu_layers=-1`)で常駐させ、swap は CPU 退避ではなく
+    モデル破棄→ディスク再ロードで行う（llama.cpp は CPU パークの口を持たないが、
+    `del` で VRAM をドライバに即返すため Anima との 1 プロセス同居が成立する）。
+    """
+
+    def __init__(self, model_id: str, *, hf_home: Path) -> None:
         self._model_id = model_id
-        self._weights_dir = weights_dir
-        self._model: Any = None
-        self._tokenizer: Any = None
-        self._on_cuda: bool = False
-        # 量子化済み weight の CPU RAM 退避バッファ。`evict_to_cpu` で params/buffers の
-        # 生バイトを格納し、`load` (warm) で CUDA にコピーして復帰する。bnb の
-        # Linear4bit は `.to("cpu")` が再量子化相当の挙動になるため、.data 直接
-        # 書き換えで量子化コストを完全に迂回する。
-        self._cpu_snapshot: dict[str, torch.Tensor] | None = None
+        self._hf_home = hf_home
+        self._llm: Any = None  # llama_cpp.Llama | None
+        self._n_ctx = _N_CTX
 
     def is_loaded(self) -> bool:
-        return self._model is not None and self._on_cuda
+        return self._llm is not None
 
     def load(self) -> None:
-        """モデルを GPU に載せる。初回は量子化キャッシュ（あれば）から直接、無ければ
-        bf16 ロード + on-the-fly bnb NF4 量子化 + キャッシュ書き出し。2 回目以降は
-        CPU スナップショット → CUDA の memcpy のみで再量子化も再読み出しも走らない。"""
-        if self._model is not None and self._on_cuda:
+        """GGUF を全層 GPU に載せる。既にロード済みなら何もしない。"""
+        if self._llm is not None:
             return
-        if self._model is None:
-            self._cold_load()
-            self._on_cuda = True
-            return
-        # Warm 復帰: CPU snapshot から CUDA に memcpy。
-        assert self._cpu_snapshot is not None, "warm load without snapshot"
+        path = self._resolve_model_path()
+        _preload_cuda_runtime()
+        from llama_cpp import Llama
+
+        logger.info("Loading GGUF LLM: %s (n_ctx=%d)", Path(path).name, self._n_ctx)
         t0 = perf_counter_ns()
-        self._restore_from_snapshot()
-        t1 = perf_counter_ns()
-        self._on_cuda = True
-        logger.info("load llm (warm): restore=%.0f ms", (t1 - t0) / 1_000_000)
-
-    def _cold_load(self) -> None:
-        """ディスクから weight を取得して GPU に配置する。キャッシュ優先、失敗時は
-        HF hub から再量子化してキャッシュを作り直す。"""
-        cache_dir = self._quantized_cache_dir()
-        if self._cache_valid(cache_dir):
-            try:
-                self._load_from_source(str(cache_dir), from_cache=True)
-                return
-            except Exception as exc:
-                logger.warning(
-                    "quantized cache load failed (%s); purging %s and falling back to hub",
-                    exc,
-                    cache_dir,
-                )
-                shutil.rmtree(cache_dir, ignore_errors=True)
-                # from_pretrained が途中で落ちた場合の部分状態を一掃
-                self._tokenizer = None
-                self._model = None
-        self._load_from_source(self._model_id, from_cache=False)
-        self._save_quantized_cache(cache_dir)
-
-    def _load_from_source(self, source: str, *, from_cache: bool) -> None:
-        """`source` はキャッシュディレクトリ or HF モデル ID。キャッシュからは既に
-        量子化済みの weight をそのまま読み込むため、BitsAndBytesConfig は渡さない。
-        （saved config.json の `quantization_config` を transformers 側が再利用する）"""
-        # NF4 は正規分布前提の非一様コードブック + 二重量子化で、構造トークン
-        # （JSON 区切り等の稀頻度トークン）を壊しにくい。小型 Gemma の tail
-        # 誤差を抑えるため int4 線形グリッドではなく NF4 を採用。
-        load_kwargs: dict[str, Any] = {
-            "torch_dtype": torch.bfloat16,
-            "device_map": {"": 0},
-        }
-        if not from_cache:
-            load_kwargs["quantization_config"] = BitsAndBytesConfig(  # type: ignore[no-untyped-call]
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
-            )
-        logger.info(
-            "Loading Gemma model from %s (%s)",
-            source,
-            "pre-quantized cache" if from_cache else "HF hub + on-the-fly NF4 quantization",
+        self._llm = Llama(
+            model_path=path,
+            n_gpu_layers=-1,
+            n_ctx=self._n_ctx,
+            verbose=False,
         )
-        t0 = perf_counter_ns()
-        self._tokenizer = AutoTokenizer.from_pretrained(source)
-        t1 = perf_counter_ns()
-        self._model = AutoModelForCausalLM.from_pretrained(source, **load_kwargs)
-        t2 = perf_counter_ns()
-        logger.info(
-            "load llm (cold, %s): tokenizer=%.0f ms, from_pretrained=%.0f ms, total=%.0f ms",
-            "cache" if from_cache else "hub",
-            (t1 - t0) / 1_000_000,
-            (t2 - t1) / 1_000_000,
-            (t2 - t0) / 1_000_000,
-        )
+        logger.info("load llm (gguf): %.0f ms", (perf_counter_ns() - t0) / 1_000_000)
 
-    def _quantized_cache_dir(self) -> Path:
-        """`weights_dir/llm-nf4/<slug>` を返す。slug はモデル ID のスラッシュ置換。
-        モデル ID が変われば別ディレクトリになるので古いキャッシュと競合しない。"""
-        slug = self._model_id.replace("/", "--").replace(":", "--")
-        return self._weights_dir / "llm-nf4" / slug
+    def _resolve_model_path(self) -> str:
+        """`model_id` をローカル GGUF パスへ解決する。
 
-    @staticmethod
-    def _cache_valid(cache_dir: Path) -> bool:
-        """config.json と少なくとも 1 つの safetensors シャードがあれば有効とみなす。
-        壊れている場合は `from_pretrained` 側で例外になり、`_cold_load` が掃除する。"""
-        if not cache_dir.is_dir():
-            return False
-        if not (cache_dir / "config.json").is_file():
-            return False
-        return any(cache_dir.glob("*.safetensors"))
+        `repo:filename` 形式は HuggingFace から取得（`fetch_models` が起動時に
+        ダウンロード済みなのでキャッシュ命中で即返る）。ローカルパスはそのまま使う。
+        """
+        ref = parse_gguf_ref(self._model_id)
+        if ref is None:
+            p = Path(self._model_id).expanduser()
+            if not p.is_file():
+                raise FileNotFoundError(f"GGUF が見つかりません: {p}")
+            return str(p)
+        repo, filename = ref
+        from huggingface_hub import hf_hub_download
 
-    def _save_quantized_cache(self, cache_dir: Path) -> None:
-        """tokenizer + 量子化済みモデルをローカルに保存する。
-        transformers は bnb Params4bit を含めて save_pretrained でき、config.json に
-        `quantization_config` を埋め込むので、次回ロードは再量子化なしで済む。
-        書き出し失敗は警告に留め、推論継続を妨げない。"""
-        try:
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            assert self._tokenizer is not None and self._model is not None
-            t0 = perf_counter_ns()
-            self._tokenizer.save_pretrained(str(cache_dir))
-            self._model.save_pretrained(str(cache_dir), safe_serialization=True)
-            t1 = perf_counter_ns()
-            logger.info(
-                "saved quantized cache to %s: %.0f ms",
-                cache_dir,
-                (t1 - t0) / 1_000_000,
-            )
-        except Exception as exc:
-            logger.warning("failed to save quantized cache to %s: %s", cache_dir, exc)
+        return hf_hub_download(repo_id=repo, filename=filename, cache_dir=str(self._hf_home))
 
     def evict_to_cpu(self) -> None:
-        """量子化済み weight を CPU RAM に常駐させ、VRAM だけを解放する。
-        初回は CPU へ完全コピー（snapshot 作成）、以降は GPU storage の解放のみ。
-        推論では重みが更新されないため、snapshot は作り直さず再利用して
-        毎 swap の GPU→CPU memcpy を省く。bnb Params4bit の `.to("cpu")` は
-        再量子化相当のコストが走るため使わず、`.data` を空テンソルに差し替える。"""
-        if self._model is None or not self._on_cuda:
-            return
-        t0 = perf_counter_ns()
-        if self._cpu_snapshot is None:
-            logger.info("Snapshotting Gemma model to CPU (first evict)")
-            self._snapshot_to_cpu()
-            phase = "snapshot"
-        else:
-            logger.info("Releasing Gemma GPU storage (snapshot retained)")
-            self._release_gpu_storage()
-            phase = "release"
-        t1 = perf_counter_ns()
-        gc.collect()
-        t2 = perf_counter_ns()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        t3 = perf_counter_ns()
-        self._on_cuda = False
-        logger.info(
-            "evict llm: %s=%.0f ms, gc=%.0f ms, empty_cache=%.0f ms, total=%.0f ms",
-            phase,
-            (t1 - t0) / 1_000_000,
-            (t2 - t1) / 1_000_000,
-            (t3 - t2) / 1_000_000,
-            (t3 - t0) / 1_000_000,
-        )
-
-    def _snapshot_to_cpu(self) -> None:
-        """全 parameter / buffer の生バイトを CPU tensor として保持し、元の GPU
-        storage は `torch.empty(0)` に差し替えて解放する。Params4bit は `.data`
-        が packed uint8 のためそのまま CPU copy すれば復帰時に再量子化不要。
-        `quant_state` は bnb 側の `.to("cpu")` を使って CPU に移す。"""
-        assert self._model is not None
-        snapshot: dict[str, torch.Tensor] = {}
-        for name, param in self._model.named_parameters():
-            snapshot[f"p:{name}"] = param.data.detach().to("cpu", copy=True)
-            qs = getattr(param, "quant_state", None)
-            if qs is not None:
-                qs.to("cpu")  # QuantState は in-place で全フィールドを移動
-            param.data = torch.empty(0, dtype=param.data.dtype, device="cuda")
-        for name, buf in self._model.named_buffers():
-            snapshot[f"b:{name}"] = buf.detach().to("cpu", copy=True)
-            buf.data = torch.empty(0, dtype=buf.data.dtype, device="cuda")
-        self._cpu_snapshot = snapshot
-
-    def _release_gpu_storage(self) -> None:
-        """既に CPU snapshot がある状態で、GPU 側の storage だけを解放する。
-        重みは inference-only で不変なので CPU コピーは不要。"""
-        assert self._model is not None and self._cpu_snapshot is not None
-        for param in self._model.parameters():
-            qs = getattr(param, "quant_state", None)
-            if qs is not None:
-                qs.to("cpu")
-            param.data = torch.empty(0, dtype=param.data.dtype, device="cuda")
-        for buf in self._model.buffers():
-            buf.data = torch.empty(0, dtype=buf.data.dtype, device="cuda")
-
-    def _restore_from_snapshot(self) -> None:
-        """`_snapshot_to_cpu` で退避した生バイトを CUDA に戻す。`quant_state` も
-        同じ順序で `.to("cuda")` して bnb カーネルから参照可能な状態に戻す。
-        snapshot 自体は保持し、次回 evict を「GPU 解放のみ」で終わらせる。"""
-        assert self._model is not None and self._cpu_snapshot is not None
-        snapshot = self._cpu_snapshot
-        for name, param in self._model.named_parameters():
-            cpu_data = snapshot[f"p:{name}"]
-            param.data = cpu_data.to("cuda", non_blocking=True)
-            qs = getattr(param, "quant_state", None)
-            if qs is not None:
-                qs.to("cuda")
-        for name, buf in self._model.named_buffers():
-            buf.data = snapshot[f"b:{name}"].to("cuda", non_blocking=True)
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+        """VRAM を解放する。llama.cpp は CPU パークを持たないためモデルを破棄し、
+        次の `load` でディスクから再構築する（再ロードは数秒）。"""
+        self._free()
 
     def unload(self) -> None:
         """モデルを完全破棄する。プロセス終了時・障害復旧用。"""
-        if self._model is None:
+        self._free()
+
+    def _free(self) -> None:
+        if self._llm is None:
             return
-        logger.info("Unloading Gemma model")
+        logger.info("Freeing GGUF LLM (VRAM release)")
         t0 = perf_counter_ns()
-        del self._model
-        del self._tokenizer
-        self._model = None
-        self._tokenizer = None
-        self._on_cuda = False
-        self._cpu_snapshot = None
+        with suppress(Exception):
+            self._llm.close()
+        self._llm = None
         gc.collect()
-        t1 = perf_counter_ns()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        t2 = perf_counter_ns()
-        logger.info(
-            "unload llm: del=%.0f ms, empty_cache=%.0f ms, total=%.0f ms",
-            (t1 - t0) / 1_000_000,
-            (t2 - t1) / 1_000_000,
-            (t2 - t0) / 1_000_000,
-        )
+        logger.info("free llm: %.0f ms", (perf_counter_ns() - t0) / 1_000_000)
 
     async def run_turn(self, history: list[Message]) -> AsyncIterator[LlmStreamChunk]:
         """1 ターン分の応答を生成。`reasoning` を `LlmTextDelta` で逐次流し、最後に `LlmTurnComplete`。
@@ -469,7 +369,7 @@ class LlmService:
         失敗時は温度 0.3 でリプレイ（同期、text_delta は流さない）。ただし attempt 0 で
         ユーザに見えたテキストは `spec.reasoning` に上書きして整合を取る。
         """
-        if not self._on_cuda or self._model is None or self._tokenizer is None:
+        if self._llm is None:
             await asyncio.to_thread(self.load)
 
         streamed_reasoning = ""
@@ -482,119 +382,68 @@ class LlmService:
         except (ValueError, json.JSONDecodeError) as exc:
             logger.warning("LlmTurnSpec streaming parse failed, retrying: %s", exc)
 
-        spec = await asyncio.to_thread(self._sync_turn, history, 0.3)
+        try:
+            spec = await asyncio.to_thread(self._sync_turn, history, 0.3)
+        except (ValueError, json.JSONDecodeError, ValidationError) as exc:
+            # リトライも失敗（出力截断 / スキーマ不一致 / 文脈長超過の ValueError 等）。
+            # 例外を上げるとターンが内部エラーで落ちるので、チャットのみ応答に degrade する。
+            logger.warning("LLM retry failed (%s); degrading to a chat-only reply", exc)
+            fallback = streamed_reasoning or "うまく生成できませんでした。もう一度試してください。"
+            yield LlmTurnComplete(spec=LlmTurnSpec(reasoning=fallback))
+            return
         if streamed_reasoning:
             spec = spec.model_copy(update={"reasoning": streamed_reasoning})
         yield LlmTurnComplete(spec=spec)
 
-    def _prepare_inputs(self, history: list[Message]) -> Any:
-        """履歴から chat template + tokenize 済みテンソルを作る。"""
-        tokenizer = self._tokenizer
-        model = self._model
-        assert tokenizer is not None and model is not None
-
-        messages = _build_chat_messages(history)
-        return tokenizer.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_tensors="pt",
-            return_dict=True,
-        ).to(model.device)
-
     async def _stream_once(
         self, history: list[Message], *, temperature: float
     ) -> AsyncIterator[LlmStreamChunk]:
-        tokenizer = self._tokenizer
-        model = self._model
-        assert tokenizer is not None and model is not None
+        llm = self._llm
+        assert llm is not None
 
-        inputs = self._prepare_inputs(history)
+        messages = _build_chat_messages(history)
+        loop = asyncio.get_running_loop()
 
-        streamer = TextIteratorStreamer(
-            tokenizer,
-            skip_prompt=True,
-            skip_special_tokens=True,
-            timeout=60.0,
-        )
-        gen_kwargs: dict[str, Any] = {
-            "max_new_tokens": 1024,
-            "pad_token_id": tokenizer.eos_token_id,
-            "streamer": streamer,
-        }
-        if temperature > 0:
-            gen_kwargs |= {"do_sample": True, "temperature": temperature, "top_p": 0.9}
-        else:
-            gen_kwargs["do_sample"] = False
+        def _open_stream() -> Any:
+            return llm.create_chat_completion(
+                messages=messages,
+                max_tokens=_MAX_TOKENS,
+                temperature=temperature,
+                stream=True,
+            )
 
-        gen_error: list[BaseException] = []
-
-        def _run_generate() -> None:
-            try:
-                with torch.inference_mode():
-                    model.generate(**inputs, **gen_kwargs)
-            except BaseException as exc:
-                gen_error.append(exc)
-                # 失敗時もストリーマを閉じないとコンシューマがハングする
-                streamer.end()  # type: ignore[no-untyped-call]
-
-        thread = Thread(target=_run_generate, daemon=True)
-        thread.start()
+        # 生成本体（prompt eval + decode）はブロッキングなので executor で回す。
+        stream = await loop.run_in_executor(None, _open_stream)
 
         all_text = ""
         emitted = ""
-        loop = asyncio.get_running_loop()
-
-        try:
-            while True:
-                chunk = await loop.run_in_executor(None, _safe_next, streamer)
-                if chunk is _STOP:
-                    break
-                assert isinstance(chunk, str)
-                all_text += chunk
-                decoded, ended = _decode_partial_reasoning(all_text)
-                if len(decoded) > len(emitted):
-                    yield LlmTextDelta(delta=decoded[len(emitted) :])
-                    emitted = decoded
-                if ended:
-                    # 以降は tool_calls のパース用に蓄積するだけ
-                    while True:
-                        tail = await loop.run_in_executor(None, _safe_next, streamer)
-                        if tail is _STOP:
-                            break
-                        assert isinstance(tail, str)
-                        all_text += tail
-                    break
-        finally:
-            thread.join(timeout=10.0)
-
-        if gen_error:
-            raise RuntimeError("Gemma generate failed") from gen_error[0]
+        while True:
+            chunk = await loop.run_in_executor(None, _safe_next, stream)
+            if chunk is _STOP:
+                break
+            piece = chunk["choices"][0]["delta"].get("content")
+            if not piece:
+                continue
+            all_text += piece
+            decoded, _ended = _decode_partial_reasoning(all_text)
+            if len(decoded) > len(emitted):
+                yield LlmTextDelta(delta=decoded[len(emitted) :])
+                emitted = decoded
 
         spec = _parse_turn_spec(all_text)
         yield LlmTurnComplete(spec=spec)
 
     def _sync_turn(self, history: list[Message], temperature: float) -> LlmTurnSpec:
-        tokenizer = self._tokenizer
-        model = self._model
-        assert tokenizer is not None and model is not None
+        llm = self._llm
+        assert llm is not None
 
-        inputs = self._prepare_inputs(history)
-        prompt_len = inputs["input_ids"].shape[1]
-
-        gen_kwargs: dict[str, Any] = {
-            "max_new_tokens": 1024,
-            "pad_token_id": tokenizer.eos_token_id,
-        }
-        if temperature > 0:
-            gen_kwargs |= {"do_sample": True, "temperature": temperature, "top_p": 0.9}
-        else:
-            gen_kwargs["do_sample"] = False
-
-        with torch.inference_mode():
-            out = model.generate(**inputs, **gen_kwargs)
-        raw_ids = out[0][prompt_len:]
-        text = tokenizer.decode(raw_ids, skip_special_tokens=True)
+        messages = _build_chat_messages(history)
+        out = llm.create_chat_completion(
+            messages=messages,
+            max_tokens=_MAX_TOKENS,
+            temperature=temperature,
+        )
+        text = out["choices"][0]["message"].get("content") or ""
         return _parse_turn_spec(text)
 
 

@@ -30,7 +30,11 @@ class Settings(BaseSettings):
     # ない時 (dev 起動など) は Vite dev server を別ポートで立てて /api をプロキシする運用。
     client_dist_dir: Path = Path("./apps/client/dist")
 
-    llm_model_id: str = "google/gemma-4-E4B-it"
+    # LLM(日本語指示→画像プロンプト JSON)。llama.cpp(GGUF) で動かす。
+    # 形式: "<hf_repo>:<filename.gguf>"（HF から該当ファイルだけ取得）か、ローカル .gguf パス。
+    # 既定は無検閲(heretic)12B。検閲版を使うなら公式 QAT 12B に差し替える:
+    #   google/gemma-4-12B-it-qat-q4_0-gguf:gemma-4-12b-it-qat-q4_0.gguf
+    llm_model_id: str = "igorls/gemma-4-12B-it-heretic-GGUF:gemma-4-12B-it-heretic-Q4_K_M.gguf"
     # Anima のベース(diffusers 形式リポ)。VAE / Qwen3 text encoder / tokenizer /
     # scheduler / modular pipeline 定義をここから読む。派生(WAI-Anima 等)は DiT だけを
     # 差し替えて使うため、ベースは常にこのリポを共有する。

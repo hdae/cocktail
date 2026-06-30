@@ -94,10 +94,10 @@ async def _run_preload(
             await asyncio.to_thread(llm.load)
             manager.set_status("llm", "loaded")
             if policy == "swap":
-                # 量子化コストをここで払い切り、以降の LLM 呼び出しを CPU→CUDA
-                # memcpy のみで済ませる。スナップショットを作ってから VRAM を解放し、
-                # 起動直後も常に swap（warm load）経路で動く状態に揃える。
-                logger.info("snapshotting LLM to CPU (swap mode)")
+                # 起動時に一度ロードして GGUF/GPU の健全性を確認したら VRAM を解放し
+                # idle に戻す。llama.cpp は CPU パークを持たないので、最初のチャットで
+                # ディスクから再ロードする（数秒）。
+                logger.info("releasing LLM VRAM (swap mode)")
                 await asyncio.to_thread(llm.evict_to_cpu)
                 manager.set_status("llm", "idle")
 
@@ -135,7 +135,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     llm = LlmService(
         settings.llm_model_id,
-        weights_dir=settings.weights_dir,
+        hf_home=settings.hf_home,
     )
     image_gen = ImageGenService(settings.image_base_model_id)
     manager = ModelManager(policy=policy)
@@ -143,7 +143,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     turn_registry = TurnRegistry()
 
     async def _evict_llm() -> None:
-        # swap モードでは CPU 退避で再活性化を高速化する（再量子化を再実行しない）
+        # swap モードでは GGUF を破棄して VRAM を解放する（次の LLM 呼び出しで再ロード）
         await asyncio.to_thread(llm.evict_to_cpu)
         manager.set_status("llm", "idle")
 
@@ -185,8 +185,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             with suppress(asyncio.CancelledError, Exception):
                 await preload_task
         await turn_registry.shutdown()
-        llm.unload()
-        image_gen.unload()
+        # in-flight な GPU フェーズ(進行中のチャットターン)の完了を待ってからモデルを解放する。
+        # llama.cpp の unload() は close() で C リソースを即解放するため、生成中に解放すると
+        # use-after-free になる。pump タスクは fire-and-forget で turn_registry.shutdown() では
+        # drain されないので、manager のロックを介して現フェーズの完走を待ってから unload する。
+        try:
+            async with asyncio.timeout(15.0):
+                async with manager.acquire("llm"):
+                    llm.unload()
+                    image_gen.unload()
+        except Exception:
+            # ロック取得に失敗/タイムアウト時もプロセス終了直前なので best-effort で解放する
+            # （unload は冪等なので二重呼び出しでも安全）。
+            logger.warning("shutdown drain failed/timed out; unloading without lock")
+            with suppress(Exception):
+                llm.unload()
+                image_gen.unload()
 
 
 _READY_GATED_PATHS: frozenset[str] = frozenset({"/api/chat", "/api/generate"})

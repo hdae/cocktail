@@ -248,14 +248,28 @@ def _resolve_civitai(
 
 
 def _ensure_llm(settings: Settings) -> None:
-    from huggingface_hub import snapshot_download
+    """LLM(GGUF)をローカルに用意する。
 
-    if not _looks_like_hf_repo(settings.llm_model_id):
-        raise FetchError(
-            f"LLM_MODEL_ID は HuggingFace リポ ID である必要があります: {settings.llm_model_id!r}"
-        )
-    logger.info("ensuring LLM snapshot: %s", settings.llm_model_id)
-    snapshot_download(repo_id=settings.llm_model_id, cache_dir=str(settings.hf_home))
+    ``repo:filename.gguf`` 形式なら HF からそのファイルだけ取得し、ローカル
+    ``.gguf`` パスなら存在確認のみ。LLM は llama.cpp(GGUF) で動かすため、
+    diffusers 形式リポや transformers モデルは受け付けない。
+    """
+    from cocktail_server.services.llm import parse_gguf_ref
+
+    ref = parse_gguf_ref(settings.llm_model_id)
+    if ref is None:
+        p = Path(settings.llm_model_id).expanduser()
+        if not p.is_file():
+            raise FetchError(
+                "LLM_MODEL_ID は 'repo:filename.gguf' 形式かローカル .gguf パスで"
+                f"指定してください: {settings.llm_model_id!r}"
+            )
+        return
+    repo, filename = ref
+    from huggingface_hub import hf_hub_download
+
+    logger.info("ensuring GGUF LLM: %s / %s", repo, filename)
+    hf_hub_download(repo_id=repo, filename=filename, cache_dir=str(settings.hf_home))
 
 
 def _ensure_image_base(settings: Settings) -> None:
