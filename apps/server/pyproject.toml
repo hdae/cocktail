@@ -10,12 +10,18 @@ dependencies = [
     "pydantic-settings>=2.5",
     "pillow>=10.4",
     "torch>=2.8",
+    # diffusers の Cosmos/Anima DiT は concat_padding_mask 経路で torchvision.transforms を使う
+    "torchvision>=0.21",
     "transformers>=4.51",
     "accelerate>=1.0",
     "bitsandbytes>=0.43",
-    "diffusers>=0.36",
-    # hdae/diffusers-anima は個人リポのため破壊的変更回避のためコミット固定
-    "diffusers-anima @ git+https://github.com/hdae/diffusers-anima.git@1a59c55a377d0430b2fecc7f4d1ec7887d41a42a",
+    # Gemma QAT(w4a16-ct, int4 事前量子化)の読込に必要
+    "compressed-tensors",
+    # Anima 単体チェックポイントを変換ロードするため safetensors を直接利用
+    "safetensors>=0.4",
+    # Anima は公式 diffusers に modular pipeline として入ったが未リリースのため
+    # git から取得する（コミット固定は [tool.uv.sources] を参照）
+    "diffusers",
     "huggingface-hub>=0.24",
     "httpx>=0.27",
     "sentencepiece>=0.2",
@@ -31,13 +37,13 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/cocktail_server"]
 
-[tool.hatch.metadata]
-# diffusers-anima を git URL で取るため direct reference を許可
-allow-direct-references = true
-
 [tool.uv.sources]
 # PyTorch は CUDA 対応ビルドを使う（Blackwell RTX 50xx は CUDA 12.8+ 必須）
 torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+# Anima modular pipeline (huggingface/diffusers#13732) は未リリースのため git 固定。
+# 兄弟プロジェクト vImagen で実績のある main コミットに合わせて de-risk する。
+diffusers = { git = "https://github.com/huggingface/diffusers.git", rev = "41add3410424cc33d748a7fd3409132d2f6b4ad2" }
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

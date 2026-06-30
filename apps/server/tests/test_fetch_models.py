@@ -17,6 +17,15 @@ from cocktail_server.scripts.fetch_models import (
     parse_air,
 )
 
+# autouse フィクスチャで差し替えるため、実関数の参照を import 時に確保しておく。
+_REAL_ENSURE_IMAGE_BASE = fetch_models._ensure_image_base
+
+
+@pytest.fixture(autouse=True)
+def _stub_image_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ensure_all が呼ぶ base リポの実ダウンロードを既定で抑止する。"""
+    monkeypatch.setattr(fetch_models, "_ensure_image_base", lambda _: None)
+
 
 def _settings(tmp_path: Path) -> Settings:
     (tmp_path / "models").mkdir()
@@ -27,7 +36,7 @@ def _settings(tmp_path: Path) -> Settings:
         images_dir=tmp_path / "images",
         weights_dir=tmp_path / "weights",
         llm_model_id="google/gemma-4-E4B-it",
-        image_model_id="urn:air:anima:checkpoint:civitai:2544636@2859702",
+        image_model_id="urn:air:anima:checkpoint:civitai:2544636@2983680",
         civitai_token=None,
     )
 
@@ -238,26 +247,42 @@ def test_ensure_all_raises_when_local_path_missing(
         ensure_all(settings)
 
 
-def test_ensure_all_calls_snapshot_for_hf_image(
+def test_ensure_all_rejects_hf_repo_as_image_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # diffusers 形式リポは派生(IMAGE_MODEL_ID)ではなくベースに置く運用へ変えたため拒否する。
+    settings = _settings(tmp_path)
+    settings = settings.model_copy(update={"image_model_id": "someorg/some-anima-diffusers"})
+    monkeypatch.setattr(fetch_models, "_ensure_llm", lambda _: None)
+    with pytest.raises(FetchError, match="IMAGE_BASE_MODEL_ID"):
+        ensure_all(settings)
+
+
+def test_ensure_all_returns_none_without_derivative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 派生未指定(空)ならベースだけを使うため None を返す。
+    settings = _settings(tmp_path)
+    settings = settings.model_copy(update={"image_model_id": ""})
+    monkeypatch.setattr(fetch_models, "_ensure_llm", lambda _: None)
+    assert ensure_all(settings) is None
+
+
+def test_ensure_image_base_downloads_base_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings = _settings(tmp_path)
-    settings = settings.model_copy(update={"image_model_id": "hdae/diffusers-anima-preview"})
-    monkeypatch.setattr(fetch_models, "_ensure_llm", lambda _: None)
-
     calls: list[dict[str, Any]] = []
 
     def fake_snapshot(**kwargs: Any) -> str:
         calls.append(kwargs)
-        return str(tmp_path / "hf-cache" / "hdae--diffusers-anima-preview")
+        return str(tmp_path / "hf-cache")
 
     import huggingface_hub
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
-
-    resolved = ensure_all(settings)
-    assert resolved == Path(str(tmp_path / "hf-cache" / "hdae--diffusers-anima-preview"))
-    assert calls and calls[0]["repo_id"] == "hdae/diffusers-anima-preview"
+    _REAL_ENSURE_IMAGE_BASE(settings)
+    assert calls and calls[0]["repo_id"] == settings.image_base_model_id
 
 
 def test_civitai_401_hints_at_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

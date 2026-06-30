@@ -7,7 +7,7 @@
 - **Server**: FastAPI + uvicorn（`uv` workspace、Python 3.12）
 - **Client**: React + Vite + shadcn-ui（`pnpm` workspace）
 - **LLM**: Gemma 4 E4B（Transformers + bitsandbytes 4bit）
-- **画像生成**: [diffusers-anima](https://github.com/hdae/diffusers-anima) の `AnimaPipeline`（bfloat16）
+- **画像生成**: 公式 [diffusers](https://github.com/huggingface/diffusers) の Anima modular pipeline（bfloat16）。派生(WAI-Anima)は DiT 単体をメモリ内変換してベースに差し込む
 
 ## 現在のマイルストーン
 
@@ -35,13 +35,14 @@ pnpm dev
 起動時の挙動:
 
 1. `LLM_MODEL_ID` の HF リポを `snapshot_download` で取得
-2. `IMAGE_MODEL_ID` に従って Image モデルを取得
+2. `IMAGE_BASE_MODEL_ID`（Anima ベースの diffusers リポ）を `snapshot_download` で取得
+3. `IMAGE_MODEL_ID`（派生 DiT 単体）を取得
    - `urn:air:...` なら Civitai API で解決し `${WEIGHTS_DIR}/civitai/{slug}-{sha256[:12]}.{ext}` に配置
-   - HF リポ ID(`xxx/yyy`) なら `snapshot_download`
-   - それ以外（明示ローカルパス）なら存在確認のみ
-3. VRAM を検出して `residency_policy` を `swap` / `coresident` に決定
-4. LLM をプリロード（coresident なら Image もプリロード）
-5. リクエスト受付開始
+   - 明示ローカルパス(.safetensors) なら存在確認のみ
+   - 空なら派生なし（ベースだけを使う）
+4. VRAM を検出して `residency_policy` を `swap` / `coresident` に決定
+5. LLM をプリロード（coresident なら Image もプリロード）
+6. リクエスト受付開始
 
 2 回目以降の起動は sha256 一致で再ダウンロードをスキップする。
 

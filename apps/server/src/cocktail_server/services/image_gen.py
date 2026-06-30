@@ -13,67 +13,90 @@ logger = logging.getLogger(__name__)
 
 
 class ImageGenService:
-    """AnimaPipeline を呼出時ロードで運用するラッパ。
+    """公式 diffusers の Anima modular pipeline を呼出時ロードで運用するラッパ。
 
-    Cosmos-Predict2 派生のため **bfloat16** 固定。fp16 だと数値不安定の報告あり。
+    Cosmos-Predict2 派生のため **bfloat16** 固定（fp16 は数値不安定の報告あり）。
+    ベース(diffusers 形式リポ)の VAE / Qwen3 text encoder / tokenizer / scheduler を
+    共有し、派生(WAI-Anima 等)の単体チェックポイントは DiT(+任意の LLM アダプタ)だけを
+    `anima_convert` でメモリ内変換して `update_components` で差し込む。公式 Anima には
+    `from_single_file` が無いため、この変換が単体ロードの代替になる。
     """
 
-    def __init__(self, model_id: str) -> None:
-        self._model_id = model_id
+    def __init__(self, base_model_id: str, dit_path: str | None = None) -> None:
+        self._base_model_id = base_model_id
+        self._dit_path = dit_path
         self._pipe: Any = None
         self._on_cuda: bool = False
+        # 現在 guider に載っている guidance_scale。cfg 変更時のみ guider を作り直す。
+        self._guider_cfg: float | None = None
 
-    def set_model_id(self, model_id: str) -> None:
-        """ロード前に model_id を差し替える（AIR を解決したローカルパスへ置換する用途）。"""
+    def set_dit_path(self, dit_path: str | None) -> None:
+        """ロード前に派生 DiT の単体チェックポイントパスを差し替える。
+
+        `None` のときはベースの transformer をそのまま使う（派生なし）。
+        """
         if self._pipe is not None:
-            raise RuntimeError("cannot change model_id after the pipeline is loaded")
-        self._model_id = model_id
+            raise RuntimeError("cannot change dit_path after the pipeline is loaded")
+        self._dit_path = dit_path
 
     def is_loaded(self) -> bool:
         return self._pipe is not None and self._on_cuda
 
     def load(self) -> None:
-        """pipe を GPU に載せる。初回は from_pretrained、2 回目以降は CPU→CUDA 転送のみ。"""
+        """pipe を GPU に載せる。初回は from_pretrained + DiT 変換、2 回目以降は CPU→CUDA。"""
         if self._pipe is not None and self._on_cuda:
             return
         if self._pipe is None:
-            logger.info("Loading Anima pipeline: %s", self._model_id)
-            from diffusers_anima import AnimaPipeline
-
-            t0 = perf_counter_ns()
-            if self._model_id.endswith((".safetensors", ".ckpt")):
-                pipe = AnimaPipeline.from_single_file(
-                    self._model_id,
-                    torch_dtype=torch.bfloat16,
-                )
-            else:
-                pipe = AnimaPipeline.from_pretrained(
-                    self._model_id,
-                    torch_dtype=torch.bfloat16,
-                )
-            t1 = perf_counter_ns()
-            pipe.to("cuda")
-            t2 = perf_counter_ns()
-            self._pipe = pipe
-            self._on_cuda = True
-            logger.info(
-                "load image (cold): from_pretrained=%.0f ms, to_cuda=%.0f ms, total=%.0f ms",
-                (t1 - t0) / 1_000_000,
-                (t2 - t1) / 1_000_000,
-                (t2 - t0) / 1_000_000,
-            )
+            self._cold_load()
             return
         t0 = perf_counter_ns()
         self._pipe.to("cuda")
-        t1 = perf_counter_ns()
         self._on_cuda = True
-        logger.info("load image (warm): to_cuda=%.0f ms", (t1 - t0) / 1_000_000)
+        logger.info("load image (warm): to_cuda=%.0f ms", (perf_counter_ns() - t0) / 1_000_000)
+
+    def _cold_load(self) -> None:
+        """ベースを ModularPipeline でロードし、派生 DiT を変換して差し込み、CUDA に載せる。"""
+        from diffusers import ModularPipeline
+
+        logger.info(
+            "Loading Anima modular pipeline (base=%s, dit=%s)",
+            self._base_model_id,
+            self._dit_path,
+        )
+        t0 = perf_counter_ns()
+        pipe = ModularPipeline.from_pretrained(self._base_model_id)
+        pipe.load_components(torch_dtype=torch.bfloat16)
+        t1 = perf_counter_ns()
+        if self._dit_path:
+            from cocktail_server.services.anima_convert import load_single_file_components
+
+            transformer, text_conditioner = load_single_file_components(
+                self._dit_path, torch.bfloat16
+            )
+            # DiT のみの派生は text_conditioner=None → ベースの LLM アダプタを流用する。
+            if text_conditioner is not None:
+                pipe.update_components(transformer=transformer, text_conditioner=text_conditioner)
+            else:
+                pipe.update_components(transformer=transformer)
+        t2 = perf_counter_ns()
+        pipe.to("cuda")
+        t3 = perf_counter_ns()
+        self._pipe = pipe
+        self._on_cuda = True
+        self._guider_cfg = None
+        logger.info(
+            "load image (cold): base=%.0f ms, convert_dit=%.0f ms, to_cuda=%.0f ms, total=%.0f ms",
+            (t1 - t0) / 1_000_000,
+            (t2 - t1) / 1_000_000,
+            (t3 - t2) / 1_000_000,
+            (t3 - t0) / 1_000_000,
+        )
 
     def evict_to_cpu(self) -> None:
-        """pipe を CPU RAM に退避させ、VRAM を解放する。次の load は warm 経路になる。
+        """pipe を CPU RAM に退避させ VRAM を解放する。次の load は warm 経路になる。
 
-        diffusers の `.to("cpu")` は bf16 pipeline 全体に対して安全に動作する
-        （bnb のようなカーネル再初期化依存が無い）。
+        ModularPipeline 全体が `.to("cpu")` をサポートしており、全コンポーネントが
+        まとめて CPU へ移る（bnb のようなカーネル再初期化依存が無い bf16 なので安全）。
         """
         if self._pipe is None or not self._on_cuda:
             return
@@ -82,17 +105,15 @@ class ImageGenService:
         self._pipe.to("cpu")
         t1 = perf_counter_ns()
         gc.collect()
-        t2 = perf_counter_ns()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        t3 = perf_counter_ns()
+        t2 = perf_counter_ns()
         self._on_cuda = False
         logger.info(
-            "evict image: to_cpu=%.0f ms, gc=%.0f ms, empty_cache=%.0f ms, total=%.0f ms",
+            "evict image: to_cpu=%.0f ms, cleanup=%.0f ms, total=%.0f ms",
             (t1 - t0) / 1_000_000,
             (t2 - t1) / 1_000_000,
-            (t3 - t2) / 1_000_000,
-            (t3 - t0) / 1_000_000,
+            (t2 - t0) / 1_000_000,
         )
 
     def unload(self) -> None:
@@ -104,6 +125,7 @@ class ImageGenService:
         del self._pipe
         self._pipe = None
         self._on_cuda = False
+        self._guider_cfg = None
         gc.collect()
         t1 = perf_counter_ns()
         if torch.cuda.is_available():
@@ -138,6 +160,19 @@ class ImageGenService:
             seed=seed,
         )
 
+    def _apply_cfg(self, cfg: float) -> None:
+        """guidance_scale が変わったときだけ guider コンポーネントを作り直す。
+
+        公式 Anima の CFG は `__call__` 引数ではなく `ClassifierFreeGuidance` guider
+        コンポーネントで決まるため、属性代入ではなく `update_components` で差し替える。
+        """
+        if self._guider_cfg == cfg:
+            return
+        from diffusers import ClassifierFreeGuidance
+
+        self._pipe.update_components(guider=ClassifierFreeGuidance(guidance_scale=cfg))
+        self._guider_cfg = cfg
+
     def _generate_sync(
         self,
         *,
@@ -152,6 +187,8 @@ class ImageGenService:
         if not self._on_cuda:
             self.load()
 
+        self._apply_cfg(cfg)
+
         generator = None
         if seed is not None:
             generator = torch.Generator(device="cpu").manual_seed(seed)
@@ -163,7 +200,7 @@ class ImageGenService:
                 width=width,
                 height=height,
                 num_inference_steps=steps,
-                guidance_scale=cfg,
+                num_images_per_prompt=1,
                 generator=generator,
             )
         image: Image = result.images[0]

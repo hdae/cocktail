@@ -50,13 +50,19 @@ explicit_package_bases = true
 [[tool.mypy.overrides]]
 module = [
     "bitsandbytes.*",
-    "diffusers_anima.*",
-    "diffusers.*",
+    "compressed_tensors.*",
     "transformers.*",
     "accelerate.*",
 ]
 ignore_missing_imports = true
 disable_error_code = ["no-untyped-call"]
+
+# diffusers は py.typed を持つが部分的・動的型付け（ModularPipeline / Cosmos の動的
+# コンポーネント属性など）で strict と相性が悪い。境界ライブラリとして Any 扱いにする。
+[[tool.mypy.overrides]]
+module = ["diffusers", "diffusers.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

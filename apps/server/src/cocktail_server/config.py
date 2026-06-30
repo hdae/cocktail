@@ -31,11 +31,15 @@ class Settings(BaseSettings):
     client_dist_dir: Path = Path("./apps/client/dist")
 
     llm_model_id: str = "google/gemma-4-E4B-it"
-    # 画像モデルの指定。次のいずれかを受け付ける:
-    #   - Civitai AIR(URN): urn:air:... （デフォルト、wai-anima v10）
+    # Anima のベース(diffusers 形式リポ)。VAE / Qwen3 text encoder / tokenizer /
+    # scheduler / modular pipeline 定義をここから読む。派生(WAI-Anima 等)は DiT だけを
+    # 差し替えて使うため、ベースは常にこのリポを共有する。
+    image_base_model_id: str = "circlestone-labs/Anima-Base-v1.0-Diffusers"
+    # 派生モデル(DiT 単体チェックポイント)の指定。次のいずれかを受け付ける:
+    #   - Civitai AIR(URN): urn:air:... （デフォルト、wai-anima）
     #   - HuggingFace リポ ID: xxx/yyy
     #   - 明示ローカルパス: /path/to/model.safetensors
-    image_model_id: str = "urn:air:anima:checkpoint:civitai:2544636@2859702"
+    image_model_id: str = "urn:air:anima:checkpoint:civitai:2544636@2983680"
     # Civitai の gated モデル用トークン。
     civitai_token: str | None = None
 

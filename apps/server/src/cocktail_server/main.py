@@ -85,7 +85,7 @@ async def _run_preload(
         logger.info("ensuring models on disk…")
         resolved = await asyncio.to_thread(fetch_models.ensure_all, settings)
         if resolved is not None:
-            image_gen.set_model_id(str(resolved))
+            image_gen.set_dit_path(str(resolved))
 
         app.state.startup_state = "loading"
         logger.info("preloading LLM…")
@@ -137,7 +137,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.llm_model_id,
         weights_dir=settings.weights_dir,
     )
-    image_gen = ImageGenService(settings.image_model_id)
+    image_gen = ImageGenService(settings.image_base_model_id)
     manager = ModelManager(policy=policy)
     conversations = ConversationStore()
     turn_registry = TurnRegistry()

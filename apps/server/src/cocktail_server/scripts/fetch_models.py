@@ -258,21 +258,45 @@ def _ensure_llm(settings: Settings) -> None:
     snapshot_download(repo_id=settings.llm_model_id, cache_dir=str(settings.hf_home))
 
 
-def _ensure_image(settings: Settings) -> Path | None:
+def _ensure_image_base(settings: Settings) -> None:
+    """Anima のベース(diffusers 形式リポ)を取得する。
+
+    VAE / Qwen3 text encoder / tokenizer / scheduler / modular pipeline 定義はここから
+    読む。派生(WAI-Anima 等)は DiT 単体だけを差し替えるため、ベースは常に必要。
+    """
     from huggingface_hub import snapshot_download
 
+    repo = settings.image_base_model_id
+    if not _looks_like_hf_repo(repo):
+        raise FetchError(
+            f"IMAGE_BASE_MODEL_ID は HuggingFace リポ ID である必要があります: {repo!r}"
+        )
+    logger.info("ensuring Anima base snapshot: %s", repo)
+    snapshot_download(repo_id=repo, cache_dir=str(settings.hf_home))
+
+
+def _ensure_image(settings: Settings) -> Path | None:
+    """派生(DiT 単体チェックポイント)を解決する。
+
+    - 空文字 → 派生なし(ベースだけを使う)を意味し ``None`` を返す。
+    - ``urn:air:...`` → Civitai から DiT 単体ファイルを取得。
+    - それ以外 → 単体 ``.safetensors`` のローカルパスとして存在確認のみ。
+
+    diffusers 形式リポは派生ではなくベースなので IMAGE_BASE_MODEL_ID に指定する。
+    """
     value = settings.image_model_id
     if not value:
-        raise FetchError("IMAGE_MODEL_ID が設定されていません。")
+        return None
 
     if value.startswith("urn:air:"):
         air = parse_air(value)
         return _resolve_civitai(air, settings)
 
     if _looks_like_hf_repo(value):
-        logger.info("ensuring image snapshot: %s", value)
-        local = snapshot_download(repo_id=value, cache_dir=str(settings.hf_home))
-        return Path(local)
+        raise FetchError(
+            "IMAGE_MODEL_ID は DiT 単体チェックポイント(Civitai AIR か .safetensors パス)を"
+            f"指定してください。diffusers 形式リポは IMAGE_BASE_MODEL_ID へ: {value!r}"
+        )
 
     path = Path(value).expanduser()
     if not path.exists():
@@ -290,4 +314,5 @@ def ensure_all(settings: Settings) -> Path | None:
     os.environ.setdefault("HF_HOME", str(settings.hf_home.resolve()))
 
     _ensure_llm(settings)
+    _ensure_image_base(settings)
     return _ensure_image(settings)
