@@ -8,6 +8,7 @@
 - **Client**: React + Vite + shadcn-ui（`pnpm` workspace）
 - **LLM**: Gemma 4 12B heretic（llama.cpp / GGUF Q4、無検閲・日本語）。Blackwell(sm_120) では CUDA 有効でソースビルド
 - **画像生成**: 公式 [diffusers](https://github.com/huggingface/diffusers) の Anima modular pipeline（bfloat16）。派生(WAI-Anima)は DiT 単体をメモリ内変換してベースに差し込む
+- **高速化**: 既定で Anima Turbo LoRA（step & CFG 蒸留）を PEFT アダプタとして DiT に注入。steps / CFG を落として高速生成（`IMAGE_TURBO_LORA=` を空にすると base 品質）
 
 ## 現在のマイルストーン
 
@@ -40,9 +41,10 @@ pnpm dev
    - `urn:air:...` なら Civitai API で解決し `${WEIGHTS_DIR}/civitai/{slug}-{sha256[:12]}.{ext}` に配置
    - 明示ローカルパス(.safetensors) なら存在確認のみ
    - 空なら派生なし（ベースだけを使う）
-4. VRAM を検出して `residency_policy` を `swap` / `coresident` に決定
-5. LLM をプリロード（coresident なら Image もプリロード）
-6. リクエスト受付開始
+4. `IMAGE_TURBO_LORA`（Turbo LoRA）を取得（空なら skip）。IMAGE_MODEL_ID と同じ解決規則
+5. VRAM を検出して `residency_policy` を `swap` / `coresident` に決定
+6. LLM をプリロード（coresident なら Image もプリロード）。Image のコールドロード時に Turbo LoRA を DiT へ注入
+7. リクエスト受付開始
 
 2 回目以降の起動は sha256 一致で再ダウンロードをスキップする。
 

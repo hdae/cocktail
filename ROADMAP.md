@@ -86,7 +86,7 @@ Gemma が喋り、ツール呼び出しの引数も自分で選ぶようにし�
 - [x] `GenerateImageCall` に `aspect_ratio` / `cfg_preset` / `seed` を持たせ、Gemma
       が選択
   - `aspect_ratio`: portrait 896×1152 / landscape 1152×896 / square 1024×1024
-  - `cfg_preset`: soft 3.5 / standard 4.0 / crisp 4.5
+  - `cfg_preset`: soft 3.5 / standard 4.0 / crisp 4.5 — **後に撤去**（上記「高速化 + Gemma パラメータ整理」参照）
   - `seed`: 省略時はターンごとにランダム（`secrets.randbelow`）、指定時はその値を使用
     — **M2 で `seed_action: "new" | "keep"` に置換予定**
 - [x] `transformers.TextIteratorStreamer` でトークン逐次受信、正規表現 +
@@ -107,7 +107,7 @@ Gemma が喋り、ツール呼び出しの引数も自分で選ぶようにし�
 - [x] 例文を単語羅列から「夕暮れの教室…」風の文章 3 例に差し替え
 - [x] アシスタント吹き出し: 先頭に Gemma の reasoning、実行中は小スピナー +
       「画像を生成しています…」の 1 行、完了後は `<details>`
-      で positive / aspect_ratio / cfg_preset / seed / resolution を展開
+      で positive / aspect_ratio / steps / cfg（旧 cfg_preset）/ seed / resolution を展開
 
 ### M1d: 起動整備（完了）
 
@@ -138,6 +138,18 @@ Gemma が喋り、ツール呼び出しの引数も自分で選ぶようにし�
   llama.cpp へ移行。既定は無検閲 Gemma 4 12B(Q4_K_M) で decode ~5x・同 VRAM・無検閲。
   CUDA は sm_120 でソースビルド（Dockerfile builder ステージ / cudart は torch 同梱分を流用）。
 
+### 高速化 + Gemma パラメータ整理（技術スタック更新の続き）
+
+生成を高速化しつつ、Gemma に持たせるパラメータを技術ノブと表現ノブに切り分けた。
+
+- **Anima Turbo LoRA**（step & CFG 蒸留）を PEFT アダプタとして DiT にコールドロード時
+  注入し、既定 ON に。`IMAGE_TURBO_LORA` を空にすると base 品質へ戻る。生成の steps / CFG は
+  モードで一意化（base=32 / 4.0、Turbo=10 / 1.0）。runtime の enable/disable は再ロード無し。
+- **`cfg_preset` を撤去**（BREAKING）。CFG はサンプラ・蒸留の前提に直結する技術ノブで、
+  Gemma に自由に選ばせる対象ではない。`GenerateImageCall` で Gemma が選ぶのは `aspect_ratio` /
+  `seed` のみ。CFG / steps は `Settings.image_steps_cfg()` がモードから決める。UI の `<details>`
+  は実効 steps / CFG を表示する。
+
 ## M2: 画像メモリ + ギャラリー + シードツール化（次の最優先）
 
 **なぜここか**: Gemma
@@ -159,7 +171,7 @@ Gemma が喋り、ツール呼び出しの引数も自分で選ぶようにし�
       `./data/images/{uuid}.webp`（UUID）。**ハッシュ化は見送り**（bnb 量子化 +
       bf16 の非決定性で同一 seed/prompt でも差分が出るため、重複排除は成立しない）
 - [ ] `GenerateImageCall` 実行時、画像 ID とパラメータ（positive /
-      aspect_ratio / cfg_preset / seed / resolution）をそのセッションの
+      aspect_ratio / steps / cfg / seed / resolution）をそのセッションの
       `generated_images: list[GeneratedImageRef]` に追記
 
 ### ギャラリー（UI）
