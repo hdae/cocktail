@@ -1,7 +1,9 @@
 from cocktail_server.services.prompt_builder import (
+    GENERATE_IMAGE_TOOL,
     NEGATIVE_DEFAULT,
     build_system_prompt,
     build_user_message,
+    compose_negative,
 )
 
 
@@ -11,28 +13,50 @@ def test_negative_default_matches_official() -> None:
     )
 
 
+# --- compose_negative: 固定ベース + 追加分 ---------------------------------------
+
+
+def test_compose_negative_prepends_fixed_base_when_extra_present() -> None:
+    assert compose_negative("censored, bar censor") == f"{NEGATIVE_DEFAULT}, censored, bar censor"
+
+
+def test_compose_negative_is_base_only_when_extra_empty() -> None:
+    assert compose_negative("") == NEGATIVE_DEFAULT
+    assert compose_negative("   ") == NEGATIVE_DEFAULT
+
+
+# --- システムプロンプト: 会話ペルソナが主、JSON straitjacket は撤去 -----------------
+
+
+def test_system_prompt_dropped_json_straitjacket() -> None:
+    p = build_system_prompt()
+    assert "LlmTurnSpec" not in p
+    assert "Return ONLY a single JSON" not in p
+
+
+def test_system_prompt_has_conversational_persona_not_corporate_ai() -> None:
+    p = build_system_prompt()
+    assert "対話相手" in p
+    assert "優等生" in p  # "優等生AIを演じる必要はない"
+
+
+def test_system_prompt_avoids_draw_verb_for_the_ai() -> None:
+    p = build_system_prompt()
+    # 公開時の炎上回避: AI 自身の行為は「生成」。「描く」は不可（ユーザーの「描いて」は受ける）。
+    assert "生成する" in p
+    assert "描く / 描きます" in p
+
+
+# --- システムプロンプト: 生き残った Anima タグ規約 --------------------------------
+
+
 def test_system_prompt_declares_anima_is_not_pony() -> None:
-    assert "NOT Pony-SDXL" in build_system_prompt()
+    assert "Pony-SDXL" in build_system_prompt()
 
 
-def test_system_prompt_mentions_artist_at_prefix() -> None:
+def test_system_prompt_keeps_quality_prefix_and_score_tag() -> None:
     p = build_system_prompt()
-    assert "@" in p
-    assert "artist" in p.lower()
-
-
-def test_system_prompt_prefers_gelbooru() -> None:
-    assert "Gelbooru" in build_system_prompt()
-
-
-def test_system_prompt_restricts_underscores_to_score_tags() -> None:
-    p = build_system_prompt()
-    assert "underscore" in p.lower()
-    assert "score_7" in p
-
-
-def test_system_prompt_forbids_realism() -> None:
-    assert "realism" in build_system_prompt().lower()
+    assert "score_7, masterpiece, best quality, highres," in p
 
 
 def test_system_prompt_enumerates_all_safety_tags() -> None:
@@ -41,101 +65,90 @@ def test_system_prompt_enumerates_all_safety_tags() -> None:
         assert f'"{tag}"' in p
 
 
-def test_system_prompt_requests_turnspec_json() -> None:
+def test_system_prompt_mentions_artist_at_prefix_and_gelbooru() -> None:
     p = build_system_prompt()
-    assert "LlmTurnSpec" in p
-    assert "reasoning" in p
-    assert "tool_calls" in p
-    assert "JSON" in p
+    assert "@" in p
+    assert "artist" in p.lower()
+    assert "Gelbooru" in p
 
 
-def test_system_prompt_describes_aspect_ratio_presets() -> None:
+def test_system_prompt_restricts_underscores_and_forbids_realism() -> None:
     p = build_system_prompt()
-    for label in ("portrait", "landscape", "square"):
-        assert label in p
-    assert "896" in p
-    assert "1152" in p
-    assert "1024" in p
+    assert "underscore" in p.lower()
+    assert "realism" in p.lower()
 
 
-def test_system_prompt_does_not_expose_cfg_to_gemma() -> None:
-    # CFG / steps は技術ノブなのでモード(base/Turbo)で一意に決め、Gemma には振らせない。
+def test_system_prompt_respects_user_situation() -> None:
+    p = build_system_prompt()
+    assert "RESPECT THE USER'S SITUATION" in p
+    assert "downgrade" in p.lower()
+    assert "ヌード" in p
+    assert "nude" in p.lower()
+
+
+def test_system_prompt_describes_back_reference_rules() -> None:
+    p = build_system_prompt()
+    assert "[Turn N]" in p
+    assert "1個前" in p
+    assert "2個前" in p
+    assert "current - 1" in p
+    assert "current - 2" in p
+
+
+def test_system_prompt_explains_negative_base_is_server_prepended() -> None:
+    p = build_system_prompt()
+    assert "negative_extra" in p
+    # モデルには固定ベースを繰り返させない（サーバが前置する）
+    assert NEGATIVE_DEFAULT in p
+    assert "prepended by the server" in p
+
+
+# --- generate_image ツールスキーマ（tools= で渡す） ------------------------------
+
+
+def test_generate_image_tool_schema_shape() -> None:
+    fn = GENERATE_IMAGE_TOOL["function"]
+    assert fn["name"] == "generate_image"
+    props = fn["parameters"]["properties"]
+    assert set(props) == {"positive", "aspect_ratio", "seed_action", "negative_extra"}
+    assert props["aspect_ratio"]["enum"] == ["portrait", "landscape", "square"]
+    assert props["seed_action"]["enum"] == ["new", "keep"]
+    assert fn["parameters"]["required"] == ["positive", "aspect_ratio"]
+
+
+def test_neither_prompt_nor_tool_exposes_cfg_or_steps_knobs() -> None:
+    # 退行ガード: CFG/steps は base/Turbo モードでサーバが決め、Gemma には振らせない。
     p = build_system_prompt()
     assert "cfg_preset" not in p
     assert "CFG PRESET" not in p
+    params = GENERATE_IMAGE_TOOL["function"]["parameters"]["properties"]
+    assert "cfg" not in params
+    assert "steps" not in params
 
 
-def test_system_prompt_describes_seed_semantics() -> None:
-    p = build_system_prompt()
-    assert "seed" in p.lower()
+def test_generate_image_tool_describes_aspect_sizes() -> None:
+    desc = GENERATE_IMAGE_TOOL["function"]["parameters"]["properties"]["aspect_ratio"][
+        "description"
+    ]
+    assert "896x1152" in desc
+    assert "1152x896" in desc
+    assert "1024x1024" in desc
 
 
-def test_system_prompt_instructs_reasoning_in_japanese() -> None:
-    p = build_system_prompt()
-    assert "Japanese" in p
-    assert "reasoning" in p
+# --- build_user_message ----------------------------------------------------------
 
 
-def test_user_message_embeds_instruction_verbatim() -> None:
-    msg = build_user_message(
-        "ピンクの髪の猫耳少女が星空の下で微笑んでいる絵",
-        turn_index=1,
-        is_current=True,
-    )
-    assert "ピンクの髪の猫耳少女が星空の下で微笑んでいる絵" in msg
-    assert "JSON" in msg
+def test_user_message_embeds_instruction_without_json_directive() -> None:
+    msg = build_user_message("ピンクの髪の猫耳少女", turn_index=1, is_current=True)
+    assert "ピンクの髪の猫耳少女" in msg
+    assert "JSON" not in msg
 
 
 def test_user_message_marks_current_turn() -> None:
-    msg = build_user_message("いまのお願い", turn_index=3, is_current=True)
-    assert "[Turn 3 / current]" in msg
+    assert "[Turn 3 / current]" in build_user_message("いまのお願い", turn_index=3, is_current=True)
 
 
 def test_user_message_past_turn_has_no_current_marker() -> None:
     msg = build_user_message("昔のお願い", turn_index=1, is_current=False)
     assert "[Turn 1]" in msg
     assert "/ current" not in msg
-
-
-def test_system_prompt_describes_back_reference_rules() -> None:
-    p = build_system_prompt()
-    # CONVERSATION HISTORY 節の存在
-    assert "CONVERSATION HISTORY" in p
-    # n 個前 → current - n の対応
-    assert "1個前" in p
-    assert "2個前" in p
-    assert "current - 1" in p
-    assert "current - 2" in p
-    # ラベル仕様
-    assert "[Turn N]" in p
-    assert "[Turn N / current]" in p
-
-
-def test_system_prompt_respects_user_situation() -> None:
-    p = build_system_prompt()
-    # ユーザーの要求したシチュエーションを忠実に守るメタ指示が残っていること
-    assert "RESPECT THE USER'S SITUATION" in p
-    assert "silently downgrade" in p.lower()
-    # ヌード要求は黙って服を着せるなと明記されている（語彙羅列は避け、ヌード程度に留める）
-    assert "ヌード" in p
-    assert "nude" in p.lower()
-
-
-def test_system_prompt_allows_additive_negative() -> None:
-    p = build_system_prompt()
-    # ベース固定 + 追加可能方式
-    assert "Always start with this base" in p
-    assert "append" in p.lower()
-    assert "censored" in p  # NSFW 用の追加例が残っている
-    # ベース文字列自体は維持されている
-    assert '"worst quality, low quality, score_1, score_2, score_3, artist name"' in p
-
-
-def test_system_prompt_avoids_draw_verb_for_assistant() -> None:
-    p = build_system_prompt()
-    # 公開時の炎上回避: Gemma 自身の行為は「生成」と言う。「描く」は不可
-    assert "生成する" in p
-    assert "描く / 描きます" in p  # 禁止例として列挙されている
-    # Example の reasoning も「生成しますね」に差し替わっている
-    assert "生成しますね" in p
-    assert "描きますね" not in p

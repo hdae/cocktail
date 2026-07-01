@@ -157,6 +157,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     llm = LlmService(
         settings.llm_model_id,
         hf_home=settings.hf_home,
+        temperature=settings.llm_temperature,
+        top_p=settings.llm_top_p,
+        top_k=settings.llm_top_k,
+        repeat_penalty=settings.llm_repeat_penalty,
     )
     image_gen = ImageGenService(settings.image_base_model_id)
     manager = ModelManager(policy=policy)

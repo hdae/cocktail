@@ -15,10 +15,10 @@ from cocktail_server.schemas.generate import (
     GenerateRequest,
     GenerateResponse,
     LatencyBreakdown,
-    LlmTurnSpec,
 )
 from cocktail_server.schemas.messages import Message, TextPart
-from cocktail_server.services.llm import LlmTurnComplete
+from cocktail_server.services.llm import LlmTurnComplete, LlmTurnResult
+from cocktail_server.services.prompt_builder import compose_negative
 from cocktail_server.services.seed_resolver import resolve_seed
 
 logger = logging.getLogger(__name__)
@@ -37,8 +37,8 @@ def _save_webp(img: Image, images_dir: Path) -> str:
 async def generate(req: GenerateRequest, request: Request) -> GenerateResponse:
     """同期版 `/generate`。M0 互換のスクリプト用 API。
 
-    新実装では Gemma から `LlmTurnSpec` を受け取り、1 件目の `generate_image` ツール
-    呼び出しを採用する。ツール呼び出しがないレスポンスは 500 で返す。
+    Gemma から `LlmTurnResult`(会話テキスト + ツール呼び出し)を受け取り、1 件目の
+    `generate_image` を採用する。ツール呼び出しがないレスポンスは 500 で返す。
     """
     settings = request.app.state.settings
     manager = request.app.state.model_manager
@@ -58,14 +58,14 @@ async def generate(req: GenerateRequest, request: Request) -> GenerateResponse:
     ]
 
     manager.set_status("llm", "loading")
-    spec: LlmTurnSpec | None = None
+    result: LlmTurnResult | None = None
     try:
         async with manager.acquire("llm"):
             manager.set_status("llm", "loaded")
             llm_start = time.perf_counter_ns()
             async for chunk in llm.run_turn(synthetic_history):
                 if isinstance(chunk, LlmTurnComplete):
-                    spec = chunk.spec
+                    result = chunk.result
             llm_ms = (time.perf_counter_ns() - llm_start) // 1_000_000
     except HTTPException:
         raise
@@ -74,12 +74,13 @@ async def generate(req: GenerateRequest, request: Request) -> GenerateResponse:
         logger.exception("LLM turn failed")
         raise HTTPException(status_code=500, detail=f"LLM failed: {exc}") from exc
 
-    if spec is None or not spec.tool_calls:
+    if result is None or not result.tool_calls:
         raise HTTPException(
             status_code=500,
             detail="Gemma did not request image generation for this instruction",
         )
-    call = spec.tool_calls[0]
+    call = result.tool_calls[0]
+    negative = compose_negative(call.negative_extra)
 
     preset_width, preset_height = ASPECT_RATIO_RESOLUTIONS[call.aspect_ratio]
     # turbo と生成パラメータ(cfg/steps)は必ず整合させる。明示 turbo を最優先し、未指定でも
@@ -107,7 +108,7 @@ async def generate(req: GenerateRequest, request: Request) -> GenerateResponse:
             image_start = time.perf_counter_ns()
             img = await image_gen.generate(
                 positive=call.positive,
-                negative=call.negative,
+                negative=negative,
                 width=width,
                 height=height,
                 steps=steps,
@@ -130,8 +131,8 @@ async def generate(req: GenerateRequest, request: Request) -> GenerateResponse:
         image_id=image_id,
         image_url=f"/api/images/{image_id}.webp",
         prompt=call.positive,
-        negative_prompt=call.negative,
+        negative_prompt=negative,
         params=GenerateParams(width=width, height=height, steps=steps, cfg=cfg, seed=seed),
         latency_ms=LatencyBreakdown(llm_ms=llm_ms, image_gen_ms=image_ms, total_ms=total_ms),
-        rationale=call.rationale,
+        rationale=result.text,
     )

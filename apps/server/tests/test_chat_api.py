@@ -10,68 +10,70 @@ from typing import Any
 import pytest
 from cocktail_server.config import get_settings
 from cocktail_server.main import create_app
-from cocktail_server.schemas.generate import GenerateImageCall, LlmTurnSpec
+from cocktail_server.schemas.generate import GenerateImageCall
 from cocktail_server.schemas.messages import Message
-from cocktail_server.services.llm import LlmStreamChunk, LlmTextDelta, LlmTurnComplete
+from cocktail_server.services.llm import (
+    LlmStreamChunk,
+    LlmTextDelta,
+    LlmTurnComplete,
+    LlmTurnResult,
+)
 from cocktail_server.services.prompt_builder import NEGATIVE_DEFAULT
 from cocktail_server.services.turn_registry import TurnRegistry
 from fastapi.testclient import TestClient
 from PIL import Image as PILImage
 
 
-def _make_spec(
+def _make_result(
     *,
-    reasoning: str = "テスト用の応答です。生成しますね。",
+    text: str = "テスト用の応答です。生成しますね。",
     tool_calls: list[GenerateImageCall] | None = None,
-) -> LlmTurnSpec:
+) -> LlmTurnResult:
     if tool_calls is None:
         tool_calls = [
             GenerateImageCall(
-                name="generate_image",
                 positive=(
                     "score_7, masterpiece, best quality, safe, newest, 1girl, "
                     "fake tags for chat test"
                 ),
-                negative=NEGATIVE_DEFAULT,
                 aspect_ratio="portrait",
                 seed_action="new",
-                rationale="fake rationale",
             )
         ]
-    return LlmTurnSpec(reasoning=reasoning, tool_calls=tool_calls)
+    return LlmTurnResult(text=text, thought="", tool_calls=tool_calls)
 
 
 class FakeLlm:
-    """`run_turn` を AsyncIterator で返すフェイク。reasoning を 2 つの text_delta に分割して返す。
+    """`run_turn` を AsyncIterator で返すフェイク。text を 2 つの text_delta に分割して返す。
 
     受け取った履歴は `received_histories` に記録し、multi-turn テストから検証できるようにする。
-    `specs` を与えるとターンごとに順番に消費する（ターン数に足りなければ最後の spec を繰り返す）。
+    `results` を与えるとターンごとに順番に消費する（足りなければ最後の result を繰り返す）。
     """
 
     def __init__(
         self,
-        spec: LlmTurnSpec | None = None,
-        specs: list[LlmTurnSpec] | None = None,
+        result: LlmTurnResult | None = None,
+        results: list[LlmTurnResult] | None = None,
     ) -> None:
-        if specs is not None:
-            self._specs = list(specs)
+        if results is not None:
+            self._results = list(results)
         else:
-            self._specs = [spec if spec is not None else _make_spec()]
+            self._results = [result if result is not None else _make_result()]
         self._turn = 0
         self.received_histories: list[list[Message]] = []
 
     async def run_turn(self, history: list[Message]) -> AsyncIterator[LlmStreamChunk]:
         self.received_histories.append(list(history))
-        idx = min(self._turn, len(self._specs) - 1)
+        idx = min(self._turn, len(self._results) - 1)
         self._turn += 1
-        spec = self._specs[idx]
-        reasoning = spec.reasoning
-        if reasoning:
-            mid = len(reasoning) // 2
+        result = self._results[idx]
+        text = result.text
+        if text:
+            mid = len(text) // 2
             if mid > 0:
-                yield LlmTextDelta(delta=reasoning[:mid])
-            yield LlmTextDelta(delta=reasoning[mid:])
-        yield LlmTurnComplete(spec=spec)
+                yield LlmTextDelta(delta=text[:mid])
+            yield LlmTextDelta(delta=text[mid:])
+        yield LlmTurnComplete(result=result)
 
     def unload(self) -> None:
         return None
@@ -323,7 +325,7 @@ def test_chat_without_tool_call_emits_text_only(
     get_settings.cache_clear()
     app = create_app()
     with TestClient(app) as c:
-        app.state.llm = FakeLlm(spec=_make_spec(reasoning="ありがとうございます！", tool_calls=[]))
+        app.state.llm = FakeLlm(result=_make_result(text="ありがとうございます！", tool_calls=[]))
         app.state.image_gen = FakeImageGen()
         _, _, events = _chat(c, {"parts": [{"type": "text", "text": "ありがとう"}]})
     get_settings.cache_clear()
@@ -398,24 +400,18 @@ def test_chat_seed_action_keep_reuses_previous_seed(
     get_settings.cache_clear()
     app = create_app()
     first_call = GenerateImageCall(
-        name="generate_image",
         positive="score_7, masterpiece, best quality, safe, newest, 1girl, first",
-        negative=NEGATIVE_DEFAULT,
         aspect_ratio="portrait",
         seed_action="new",
-        rationale="first",
     )
     keep_call = GenerateImageCall(
-        name="generate_image",
         positive="score_7, masterpiece, best quality, safe, newest, 1girl, tweak",
-        negative=NEGATIVE_DEFAULT,
         aspect_ratio="portrait",
         seed_action="keep",
-        rationale="tweak",
     )
     with TestClient(app) as c:
         app.state.llm = FakeLlm(
-            specs=[_make_spec(tool_calls=[first_call]), _make_spec(tool_calls=[keep_call])]
+            results=[_make_result(tool_calls=[first_call]), _make_result(tool_calls=[keep_call])]
         )
         app.state.image_gen = FakeImageGen()
 
@@ -482,15 +478,12 @@ def test_chat_landscape_aspect_ratio_resolves_to_correct_size(
     get_settings.cache_clear()
     app = create_app()
     landscape_call = GenerateImageCall(
-        name="generate_image",
         positive="score_7, masterpiece, best quality, safe, newest, 1girl, landscape",
-        negative=NEGATIVE_DEFAULT,
         aspect_ratio="landscape",
         seed_action="new",
-        rationale="wide shot",
     )
     with TestClient(app) as c:
-        app.state.llm = FakeLlm(spec=_make_spec(tool_calls=[landscape_call]))
+        app.state.llm = FakeLlm(result=_make_result(tool_calls=[landscape_call]))
         app.state.image_gen = FakeImageGen()
         _, _, events = _chat(c, {"parts": [{"type": "text", "text": "横長で風景を"}]})
     get_settings.cache_clear()
@@ -569,6 +562,38 @@ async def test_turn_registry_concurrent_subscribers_receive_same_events() -> Non
     await asyncio.wait_for(asyncio.gather(t1, t2), timeout=1.0)
     assert collected[0] == ["user_saved", "assistant_start", "done"]
     assert collected[1] == ["user_saved", "assistant_start", "done"]
+
+
+def test_chat_negative_extra_is_composed_with_fixed_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """モデルの negative_extra が固定ベースに前置され、image_gen 呼び出し・tool イベント・
+    tool_result に一貫して反映される（compose_negative の非空分岐を end-to-end で検証）。"""
+    monkeypatch.setenv("IMAGES_DIR", str(tmp_path / "images"))
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "models"))
+    monkeypatch.setenv("WEIGHTS_DIR", str(tmp_path / "weights"))
+    monkeypatch.setenv("STARTUP_PRELOAD", "false")
+    get_settings.cache_clear()
+    app = create_app()
+    call = GenerateImageCall(
+        positive="score_7, masterpiece, best quality, nsfw, newest, 1girl, nude",
+        negative_extra="censored, bad hands",
+        aspect_ratio="portrait",
+        seed_action="new",
+    )
+    fake = FakeImageGen()
+    with TestClient(app) as c:
+        app.state.llm = FakeLlm(result=_make_result(tool_calls=[call]))
+        app.state.image_gen = fake
+        _, _, events = _chat(c, {"parts": [{"type": "text", "text": "ヌードで"}]})
+    get_settings.cache_clear()
+
+    expected = f"{NEGATIVE_DEFAULT}, censored, bad hands"
+    assert fake.calls[-1]["negative"] == expected
+    tool_start = next(data for name, data in events if name == "tool_call_start")
+    assert tool_start["args"]["negative"] == expected
+    tool_end = next(data for name, data in events if name == "tool_call_end")
+    assert tool_end["data"]["negative_prompt"] == expected
 
 
 def test_chat_base_mode_passes_turbo_false(client: TestClient) -> None:

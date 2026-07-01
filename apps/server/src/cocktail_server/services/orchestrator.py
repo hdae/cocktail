@@ -28,7 +28,6 @@ from cocktail_server.schemas.events import (
 from cocktail_server.schemas.generate import (
     ASPECT_RATIO_RESOLUTIONS,
     GenerateImageCall,
-    LlmTurnSpec,
 )
 from cocktail_server.schemas.images import GeneratedImageRef
 from cocktail_server.schemas.messages import (
@@ -41,8 +40,14 @@ from cocktail_server.schemas.messages import (
 )
 from cocktail_server.services.conversation_store import ConversationStore
 from cocktail_server.services.image_gen import ImageGenService
-from cocktail_server.services.llm import LlmService, LlmTextDelta, LlmTurnComplete
+from cocktail_server.services.llm import (
+    LlmService,
+    LlmTextDelta,
+    LlmTurnComplete,
+    LlmTurnResult,
+)
 from cocktail_server.services.model_manager import ModelManager
+from cocktail_server.services.prompt_builder import compose_negative
 from cocktail_server.services.seed_resolver import resolve_seed
 
 logger = logging.getLogger(__name__)
@@ -63,7 +68,7 @@ def _save_webp(img: Image, images_dir: Path) -> str:
 
 
 class ChatOrchestrator:
-    """`POST /chat` の本体。Gemma の `LlmTurnSpec` に従ってツール有無を分岐。"""
+    """`POST /chat` の本体。Gemma の `LlmTurnResult`(会話テキスト + ツール)に従って分岐。"""
 
     def __init__(
         self,
@@ -119,9 +124,9 @@ class ChatOrchestrator:
         reference_images = [p.image_id for p in req.parts if isinstance(p, ImagePart)]
         history = await self._store.list_messages(conversation_id)
 
-        # --- 1) Gemma ターン: reasoning を逐次流し、最後に LlmTurnSpec を受け取る ---
+        # --- 1) Gemma ターン: 会話テキストを逐次流し、最後に LlmTurnResult を受け取る ---
         self._manager.set_status("llm", "loading")
-        spec: LlmTurnSpec | None = None
+        result: LlmTurnResult | None = None
         try:
             async with self._manager.acquire("llm"):
                 self._manager.set_status("llm", "loaded")
@@ -133,26 +138,26 @@ class ChatOrchestrator:
                                 delta=chunk.delta,
                             )
                     elif isinstance(chunk, LlmTurnComplete):
-                        spec = chunk.spec
+                        result = chunk.result
         except Exception:
             self._manager.set_status("llm", "error")
             raise
-        assert spec is not None, "LLM stream ended without LlmTurnComplete"
+        assert result is not None, "LLM stream ended without LlmTurnComplete"
 
         # --- 2) ツール呼び出しが無ければここで閉じる（純粋な会話応答） ---
-        if not spec.tool_calls:
+        if not result.tool_calls:
             assistant_message = self._build_chat_only_message(
                 message_id=assistant_message_id,
                 conversation_id=conversation_id,
                 parent_id=user_message.id,
-                reasoning=spec.reasoning,
+                text=result.text,
             )
             await self._store.append(conversation_id, assistant_message)
             yield AssistantEndEvent(message=assistant_message)
             return
 
         # --- 3) generate_image ツール実行 ---
-        tool_call = spec.tool_calls[0]
+        tool_call = result.tool_calls[0]
         call_id = str(uuid.uuid4())
         last_seed = await self._store.get_last_image_seed(conversation_id)
         resolved_seed = resolve_seed(
@@ -164,7 +169,7 @@ class ChatOrchestrator:
         yield ToolCallStartEvent(call_id=call_id, name=GENERATE_IMAGE_TOOL, args=tool_args)
 
         try:
-            result = await self._run_generate_image_tool(tool_call, seed=resolved_seed)
+            tool_result = await self._run_generate_image_tool(tool_call, seed=resolved_seed)
         except Exception as exc:
             logger.exception("generate_image tool failed")
             yield ToolCallEndEvent(
@@ -177,7 +182,7 @@ class ChatOrchestrator:
                 message_id=assistant_message_id,
                 conversation_id=conversation_id,
                 parent_id=user_message.id,
-                reasoning=spec.reasoning,
+                text=result.text,
                 call_id=call_id,
                 tool_args=tool_args,
                 error=str(exc),
@@ -188,29 +193,29 @@ class ChatOrchestrator:
 
         yield ImageReadyEvent(
             call_id=call_id,
-            image_id=result["image_id"],
-            image_url=result["image_url"],
+            image_id=tool_result["image_id"],
+            image_url=tool_result["image_url"],
             mime="image/webp",
-            width=result["params"]["width"],
-            height=result["params"]["height"],
+            width=tool_result["params"]["width"],
+            height=tool_result["params"]["height"],
         )
         yield ToolCallEndEvent(
             call_id=call_id,
             status="done",
             summary=_TOOL_SUCCESS_SUMMARY,
-            data=result,
+            data=tool_result,
         )
 
         image_ref = GeneratedImageRef(
-            image_id=result["image_id"],
-            image_url=result["image_url"],
+            image_id=tool_result["image_id"],
+            image_url=tool_result["image_url"],
             conversation_id=conversation_id,
             created_at=_utcnow(),
             prompt=tool_call.positive.strip(),
             seed=resolved_seed,
             aspect_ratio=tool_call.aspect_ratio,
-            width=result["params"]["width"],
-            height=result["params"]["height"],
+            width=tool_result["params"]["width"],
+            height=tool_result["params"]["height"],
         )
         await self._store.record_generated_image(conversation_id, image_ref)
 
@@ -218,10 +223,10 @@ class ChatOrchestrator:
             message_id=assistant_message_id,
             conversation_id=conversation_id,
             parent_id=user_message.id,
-            reasoning=spec.reasoning,
+            text=result.text,
             call_id=call_id,
             tool_args=tool_args,
-            result=result,
+            result=tool_result,
         )
         await self._store.append(conversation_id, assistant_message)
         yield AssistantEndEvent(message=assistant_message)
@@ -261,7 +266,7 @@ class ChatOrchestrator:
         width, height, steps, cfg = self._resolve_gen_params(call)
         args: dict[str, Any] = {
             "positive": call.positive,
-            "negative": call.negative,
+            "negative": compose_negative(call.negative_extra),
             "aspect_ratio": call.aspect_ratio,
             "seed_action": call.seed_action,
             "width": width,
@@ -278,6 +283,7 @@ class ChatOrchestrator:
         self, call: GenerateImageCall, *, seed: int
     ) -> dict[str, Any]:
         width, height, steps, cfg = self._resolve_gen_params(call)
+        negative = compose_negative(call.negative_extra)
 
         start_ns = time.perf_counter_ns()
 
@@ -288,7 +294,7 @@ class ChatOrchestrator:
                 image_start = time.perf_counter_ns()
                 img = await self._image_gen.generate(
                     positive=call.positive,
-                    negative=call.negative,
+                    negative=negative,
                     width=width,
                     height=height,
                     steps=steps,
@@ -308,9 +314,8 @@ class ChatOrchestrator:
             "image_id": image_id,
             "image_url": f"/api/images/{image_id}.webp",
             "prompt": call.positive,
-            "negative_prompt": call.negative,
+            "negative_prompt": negative,
             "aspect_ratio": call.aspect_ratio,
-            "rationale": call.rationale,
             "params": {
                 "width": width,
                 "height": height,
@@ -330,14 +335,14 @@ class ChatOrchestrator:
         message_id: str,
         conversation_id: str,
         parent_id: str,
-        reasoning: str,
+        text: str,
         call_id: str,
         tool_args: dict[str, Any],
         result: dict[str, Any],
     ) -> Message:
         parts: list[ContentPart] = []
-        if reasoning:
-            parts.append(TextPart(text=reasoning))
+        if text:
+            parts.append(TextPart(text=text))
         parts.extend(
             [
                 ToolCallPart(
@@ -374,14 +379,14 @@ class ChatOrchestrator:
         message_id: str,
         conversation_id: str,
         parent_id: str,
-        reasoning: str,
+        text: str,
     ) -> Message:
-        text = reasoning or "（返答なし）"
+        body = text or "（返答なし）"
         return Message(
             id=message_id,
             conversation_id=conversation_id,
             role="assistant",
-            parts=[TextPart(text=text)],
+            parts=[TextPart(text=body)],
             created_at=_utcnow(),
             parent_id=parent_id,
         )
@@ -392,14 +397,14 @@ class ChatOrchestrator:
         message_id: str,
         conversation_id: str,
         parent_id: str,
-        reasoning: str,
+        text: str,
         call_id: str,
         tool_args: dict[str, Any],
         error: str,
     ) -> Message:
         parts: list[ContentPart] = []
-        if reasoning:
-            parts.append(TextPart(text=reasoning))
+        if text:
+            parts.append(TextPart(text=text))
         parts.extend(
             [
                 ToolCallPart(

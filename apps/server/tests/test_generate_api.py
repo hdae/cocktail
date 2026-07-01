@@ -8,9 +8,9 @@ from typing import Any
 import pytest
 from cocktail_server.config import get_settings
 from cocktail_server.main import create_app
-from cocktail_server.schemas.generate import GenerateImageCall, LlmTurnSpec
+from cocktail_server.schemas.generate import GenerateImageCall
 from cocktail_server.schemas.messages import Message
-from cocktail_server.services.llm import LlmStreamChunk, LlmTurnComplete
+from cocktail_server.services.llm import LlmStreamChunk, LlmTurnComplete, LlmTurnResult
 from cocktail_server.services.prompt_builder import NEGATIVE_DEFAULT
 from fastapi.testclient import TestClient
 from PIL import Image as PILImage
@@ -20,24 +20,22 @@ _TURBO_URN = "urn:air:anima:lora:civitai:2560840@2979642"
 
 class FakeLlm:
     async def run_turn(self, history: list[Message]) -> AsyncIterator[LlmStreamChunk]:
-        spec = LlmTurnSpec(
-            reasoning="テスト応答",
+        result = LlmTurnResult(
+            text="テスト応答",
+            thought="",
             tool_calls=[
                 GenerateImageCall(
-                    name="generate_image",
                     positive=(
                         "score_7, masterpiece, best quality, safe, newest, 1girl, "
                         "cat ears, pink hair, starry sky, smile, "
                         "a smiling cat-eared girl under a starry sky."
                     ),
-                    negative=NEGATIVE_DEFAULT,
                     aspect_ratio="portrait",
                     seed_action="new",
-                    rationale="fake rationale",
                 )
             ],
         )
-        yield LlmTurnComplete(spec=spec)
+        yield LlmTurnComplete(result=result)
 
     def unload(self) -> None:
         return None

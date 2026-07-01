@@ -3,141 +3,66 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import gc
-import json
 import logging
-import re
 from collections.abc import AsyncIterator
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from time import perf_counter_ns
 from typing import Any, Final
 
-from json_repair import repair_json
 from pydantic import ValidationError
 
-from cocktail_server.schemas.generate import LlmTurnSpec
+from cocktail_server.schemas.generate import GenerateImageCall
 from cocktail_server.schemas.messages import (
     Message,
     TextPart,
     ToolCallPart,
 )
+from cocktail_server.services.native_tools import (
+    NativeToolStream,
+    ParsedTurn,
+    parse_native_output,
+)
 from cocktail_server.services.prompt_builder import (
-    NEGATIVE_DEFAULT,
+    GENERATE_IMAGE_TOOL,
     build_system_prompt,
     build_user_message,
 )
 
 logger = logging.getLogger(__name__)
 
-_JSON_OBJECT_RE: Final[re.Pattern[str]] = re.compile(r"\{[\s\S]*\}")
-_REASONING_START_RE: Final[re.Pattern[str]] = re.compile(r'"reasoning"\s*:\s*"')
-
-# GGUF 推論パラメータ。max_tokens は JSON 1 ターン分。n_ctx はシステムプロンプト
-# (~3.4k tok) + 数ターンの履歴を見込んだ余裕。
+# GGUF 推論パラメータ。max_tokens は会話 + 1 ツール分。n_ctx はシステムプロンプト
+# + 数ターンの履歴を見込んだ余裕。
 _MAX_TOKENS: Final[int] = 1024
 _N_CTX: Final[int] = 8192
 
 
 @dataclass(frozen=True)
 class LlmTextDelta:
-    """`reasoning` フィールドから逐次抽出したユーザ向けテキスト差分。"""
+    """ユーザ向け会話テキストのストリーム差分（native の会話領域から逐次抽出）。"""
 
     delta: str
 
 
 @dataclass(frozen=True)
-class LlmTurnComplete:
-    """LLM ターン完了。`spec.reasoning` は全文、`spec.tool_calls` は確定済み。"""
+class LlmTurnResult:
+    """1 ターンの確定結果。`text`=会話テキスト、`thought`=非表示の思考、
+    `tool_calls`=検証済み呼び出し（Phase 1 は 0 or 1 件の generate_image）。"""
 
-    spec: LlmTurnSpec
+    text: str
+    thought: str
+    tool_calls: list[GenerateImageCall]
+
+
+@dataclass(frozen=True)
+class LlmTurnComplete:
+    """LLM ターン完了。`result` は確定済み。"""
+
+    result: LlmTurnResult
 
 
 LlmStreamChunk = LlmTextDelta | LlmTurnComplete
-
-
-def _decode_partial_reasoning(all_text: str) -> tuple[str, bool]:
-    """蓄積された生テキストから `reasoning` 文字列値を部分デコードする。
-
-    Returns:
-        (decoded_so_far, ended): `ended=True` なら閉じクォートまで到達。
-        途中の不完全エスケープ（末尾 `\\` や `\\uXX`）は保留して次回呼出で再解決。
-    """
-    m = _REASONING_START_RE.search(all_text)
-    if not m:
-        return ("", False)
-    start = m.end()
-    out: list[str] = []
-    i = start
-    n = len(all_text)
-    while i < n:
-        c = all_text[i]
-        if c == "\\":
-            if i + 1 >= n:
-                break
-            nc = all_text[i + 1]
-            if nc == "n":
-                out.append("\n")
-                i += 2
-            elif nc == "t":
-                out.append("\t")
-                i += 2
-            elif nc == "r":
-                out.append("\r")
-                i += 2
-            elif nc == '"':
-                out.append('"')
-                i += 2
-            elif nc == "\\":
-                out.append("\\")
-                i += 2
-            elif nc == "/":
-                out.append("/")
-                i += 2
-            elif nc == "b":
-                out.append("\b")
-                i += 2
-            elif nc == "f":
-                out.append("\f")
-                i += 2
-            elif nc == "u":
-                if i + 5 >= n:
-                    break
-                hexchars = all_text[i + 2 : i + 6]
-                try:
-                    code = int(hexchars, 16)
-                except ValueError:
-                    out.append("\\u" + hexchars)
-                    i += 6
-                else:
-                    if 0xD800 <= code <= 0xDBFF:
-                        # 上位サロゲート。非 BMP 文字(絵文字・稀な漢字)は \uXXXX\uYYYY の
-                        # ペアで来るので、続く \uDCxx と結合して 1 コードポイントにする。
-                        # 単独で emit すると lone surrogate になり SSE の UTF-8 encode で落ちる。
-                        if i + 11 >= n or all_text[i + 6 : i + 8] != "\\u":
-                            break  # 下位サロゲートがまだ/不完全 → 保留して次回再解決
-                        try:
-                            low = int(all_text[i + 8 : i + 12], 16)
-                        except ValueError:
-                            low = 0
-                        if 0xDC00 <= low <= 0xDFFF:
-                            out.append(chr(0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)))
-                            i += 12
-                        else:
-                            out.append(chr(code))
-                            i += 6
-                    else:
-                        out.append(chr(code))
-                        i += 6
-            else:
-                out.append(nc)
-                i += 2
-        elif c == '"':
-            return ("".join(out), True)
-        else:
-            out.append(c)
-            i += 1
-    return ("".join(out), False)
 
 
 def _extract_user_text(msg: Message) -> str:
@@ -145,47 +70,40 @@ def _extract_user_text(msg: Message) -> str:
     return "\n\n".join(parts)
 
 
-def _reconstruct_assistant_spec(msg: Message) -> str:
-    """保存済み assistant Message から、Gemma が前ターンに出した JSON 相当を復元する。
+def _reconstruct_assistant_turn(msg: Message) -> str:
+    """保存済み assistant Message を、Gemma に replay するプレーンテキストへ復元する。
 
-    `TextPart` が reasoning、`ToolCallPart(name=generate_image, status=done)` が tool_calls。
-    `status=error` や tool 未呼び出しターン（TextPart のみ）も素直にシリアライズする。
+    会話テキスト(TextPart) に加え、generate_image を出したターンは positive タグを
+    含む注記を添える（「n個前の絵」参照や再調整のために過去プロンプトを見せる）。
+    native の特殊トークン(`<|tool_call>` 等)は履歴へ注入しない（トークナイズ挙動が
+    生成時と食い違う危険があるため、安全なプレーンテキストで表現する）。
     """
-    reasoning = ""
-    tool_calls: list[dict[str, Any]] = []
+    text = ""
+    image_note = ""
     for p in msg.parts:
         if isinstance(p, TextPart):
-            if not reasoning:
-                reasoning = p.text
+            if not text:
+                text = p.text
         elif isinstance(p, ToolCallPart):
             if p.name != "generate_image" or p.status != "done":
                 continue
-            args = p.args
-            call: dict[str, Any] = {
-                "name": "generate_image",
-                "positive": args.get("positive", ""),
-                "negative": args.get("negative", NEGATIVE_DEFAULT),
-                "aspect_ratio": args.get("aspect_ratio", "portrait"),
-                "seed_action": args.get("seed_action", "new"),
-                "rationale": "",
-            }
-            tool_calls.append(call)
-    return json.dumps(
-        {"reasoning": reasoning, "tool_calls": tool_calls},
-        ensure_ascii=False,
-    )
+            positive = str(p.args.get("positive", ""))
+            aspect = str(p.args.get("aspect_ratio", "portrait"))
+            seed_action = str(p.args.get("seed_action", "new"))
+            image_note = (
+                f'[generated an image — positive: "{positive}"; '
+                f"aspect_ratio: {aspect}; seed_action: {seed_action}]"
+            )
+    segments = [s for s in (text, image_note) if s]
+    return "\n\n".join(segments) or "(no response)"
 
 
 def _build_chat_messages(history: list[Message]) -> list[dict[str, Any]]:
-    """会話履歴を Gemma の chat_template 入力に変換する。
+    """会話履歴を Gemma の chat_completion 入力に変換する。
 
-    各 user メッセージに `[Turn N]` ラベルを埋め、末尾 user には
-    `[Turn N / current]` を付けて「今回応答すべきターン」を明示する。turn は
-    user 発話の出現順で 1 起点。純チャット応答のみだったターンも 1 としてカウント
-    する（case A: user/assistant ペア単位）。
-
-    最初のユーザターンにだけシステムプロンプトを埋め込む（Gemma の template は
-    system ロールを受け付けないので user メッセージに前置する）。
+    先頭に system ロールでペルソナ + タグ規約を置く（埋込 Gemma 4 テンプレは system を
+    受け付ける）。各 user に `[Turn N]` ラベルを埋め、末尾 user に `[Turn N / current]`。
+    純チャット応答のみだったターンも 1 としてカウントする（user/assistant ペア単位）。
     """
     if not history:
         raise ValueError("history must contain at least one message")
@@ -197,52 +115,57 @@ def _build_chat_messages(history: list[Message]) -> list[dict[str, Any]]:
         default=-1,
     )
 
-    messages: list[dict[str, Any]] = []
-    first_user_seen = False
-    system_prompt = build_system_prompt()
+    messages: list[dict[str, Any]] = [{"role": "system", "content": build_system_prompt()}]
     turn_index = 0
     for i, msg in enumerate(history):
         if msg.role == "user":
             turn_index += 1
             text = _extract_user_text(msg) or "(no text)"
-            user_body = build_user_message(
-                text, turn_index=turn_index, is_current=(i == last_user_pos)
+            messages.append(
+                {
+                    "role": "user",
+                    "content": build_user_message(
+                        text, turn_index=turn_index, is_current=(i == last_user_pos)
+                    ),
+                }
             )
-            if not first_user_seen:
-                content = f"{system_prompt}\n\n{user_body}"
-                first_user_seen = True
-            else:
-                content = user_body
-            messages.append({"role": "user", "content": content})
         elif msg.role == "assistant":
-            messages.append({"role": "assistant", "content": _reconstruct_assistant_spec(msg)})
+            messages.append({"role": "assistant", "content": _reconstruct_assistant_turn(msg)})
         # tool / system ロールのメッセージは現状発行していないので無視
     return messages
 
 
-def _parse_turn_spec(text: str) -> LlmTurnSpec:
-    # Gemma の生出力はデバッグに必須（trailing comma や片側クォートなど破綻パターンの同定用）
-    logger.info("Gemma raw output: %r", text)
-    match = _JSON_OBJECT_RE.search(text)
-    if match is None:
-        raise ValueError(f"No JSON object found in model output: {text!r}")
-    raw = match.group(0)
-    try:
-        data: Any = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        repaired, repair_log = repair_json(raw, return_objects=True, logging=True)
-        logger.warning(
-            "json.loads failed (%s); json_repair applied %d fix(es): %s",
-            exc,
-            len(repair_log),
-            repair_log,
+def _build_result(parsed: ParsedTurn, *, text: str | None = None) -> LlmTurnResult:
+    """パース済み native 出力を検証済み `LlmTurnResult` に変換する。
+
+    ツール引数は `GenerateImageCall` で検証する（不正 aspect_ratio や空 positive は
+    ValidationError となり、呼び出し側でリトライ/縮退に回る）。Phase 1 は generate_image
+    のみ配線し、1 件目だけ採用する。
+
+    `text` を渡すとその値を会話テキストにする（ストリーミング経路で「実際に流した
+    テキスト」を渡し、永続化テキストと逐次表示の乖離を構造的に無くすため）。None なら
+    `parsed.text`（非ストリームのリトライ経路で使う）。
+    """
+    calls: list[GenerateImageCall] = []
+    for tc in parsed.tool_calls:
+        if tc.name != "generate_image":
+            continue
+        calls.append(
+            GenerateImageCall.model_validate(
+                {
+                    "positive": tc.args.get("positive", ""),
+                    "negative_extra": tc.args.get("negative_extra", ""),
+                    "aspect_ratio": tc.args.get("aspect_ratio", "portrait"),
+                    "seed_action": tc.args.get("seed_action", "new"),
+                }
+            )
         )
-        if not isinstance(repaired, dict):
-            raise ValueError(
-                f"json_repair did not yield an object (got {type(repaired).__name__}): {raw!r}"
-            ) from exc
-        data = repaired
-    return LlmTurnSpec.model_validate(data)
+        break
+    return LlmTurnResult(
+        text=parsed.text if text is None else text,
+        thought=parsed.thought,
+        tool_calls=calls,
+    )
 
 
 def parse_gguf_ref(model_id: str) -> tuple[str, str] | None:
@@ -287,19 +210,35 @@ def _preload_cuda_runtime() -> None:
 
 
 class LlmService:
-    """GGUF 量子化 Gemma を llama.cpp(llama-cpp-python) で動かし、日本語指示から
-    `LlmTurnSpec` をストリーム生成する。
+    """GGUF 量子化 Gemma 4 を llama.cpp(llama-cpp-python) で動かし、日本語指示から
+    会話テキスト + `generate_image` ツール呼び出しをストリーム生成する。
+
+    Gemma 4 の native tool 形式(`<|tool_call>...`)は binding が構造化パースできない
+    (issue #2227)ため、`native_tools` でサーバ側パースする（一時措置）。
 
     全層 GPU offload(`n_gpu_layers=-1`)で常駐させ、swap は CPU 退避ではなく
     モデル破棄→ディスク再ロードで行う（llama.cpp は CPU パークの口を持たないが、
     `del` で VRAM をドライバに即返すため Anima との 1 プロセス同居が成立する）。
     """
 
-    def __init__(self, model_id: str, *, hf_home: Path) -> None:
+    def __init__(
+        self,
+        model_id: str,
+        *,
+        hf_home: Path,
+        temperature: float = 0.7,
+        top_p: float = 0.95,
+        top_k: int = 40,
+        repeat_penalty: float = 1.1,
+    ) -> None:
         self._model_id = model_id
         self._hf_home = hf_home
         self._llm: Any = None  # llama_cpp.Llama | None
         self._n_ctx = _N_CTX
+        self._temperature = temperature
+        self._top_p = top_p
+        self._top_k = top_k
+        self._repeat_penalty = repeat_penalty
 
     def is_loaded(self) -> bool:
         return self._llm is not None
@@ -360,39 +299,50 @@ class LlmService:
         logger.info("free llm: %.0f ms", (perf_counter_ns() - t0) / 1_000_000)
 
     async def run_turn(self, history: list[Message]) -> AsyncIterator[LlmStreamChunk]:
-        """1 ターン分の応答を生成。`reasoning` を `LlmTextDelta` で逐次流し、最後に `LlmTurnComplete`。
+        """1 ターン分を生成。会話テキストを `LlmTextDelta` で逐次流し、最後に `LlmTurnComplete`。
 
         `history` は会話の全メッセージ（末尾が今回のユーザ発話）。過去ターンの
-        アシスタント応答は保存済み parts から `LlmTurnSpec` JSON を復元して渡す。
+        アシスタント応答は保存済み parts からプレーンテキストで復元して渡す。
 
-        失敗時は温度 0.3 でリプレイ（同期、text_delta は流さない）。ただし attempt 0 で
-        ユーザに見えたテキストは `spec.reasoning` に上書きして整合を取る。
+        ストリーム中の native パースに失敗したら、同期でリプレイ（text_delta は流さない）。
+        attempt 0 でユーザに見えたテキストは `result.text` に上書きして整合を取る。
+        リトライも失敗したらチャットのみ応答へ縮退する（ターンを内部エラーで落とさない）。
         """
         if self._llm is None:
             await asyncio.to_thread(self.load)
 
-        streamed_reasoning = ""
+        streamed_text = ""
         try:
-            async for chunk in self._stream_once(history, temperature=0.0):
+            async for chunk in self._stream_once(history, temperature=self._temperature):
                 if isinstance(chunk, LlmTextDelta):
-                    streamed_reasoning += chunk.delta
+                    streamed_text += chunk.delta
                 yield chunk
             return
-        except (ValueError, json.JSONDecodeError) as exc:
-            logger.warning("LlmTurnSpec streaming parse failed, retrying: %s", exc)
+        except (ValueError, ValidationError) as exc:
+            logger.warning("native turn streaming parse failed, retrying: %s", exc)
 
         try:
-            spec = await asyncio.to_thread(self._sync_turn, history, 0.3)
-        except (ValueError, json.JSONDecodeError, ValidationError) as exc:
-            # リトライも失敗（出力截断 / スキーマ不一致 / 文脈長超過の ValueError 等）。
-            # 例外を上げるとターンが内部エラーで落ちるので、チャットのみ応答に degrade する。
+            result = await asyncio.to_thread(self._sync_turn, history)
+        except (ValueError, ValidationError) as exc:
             logger.warning("LLM retry failed (%s); degrading to a chat-only reply", exc)
-            fallback = streamed_reasoning or "うまく生成できませんでした。もう一度試してください。"
-            yield LlmTurnComplete(spec=LlmTurnSpec(reasoning=fallback))
+            fallback = streamed_text or "うまく応答できませんでした。もう一度試してください。"
+            yield LlmTurnComplete(result=LlmTurnResult(text=fallback, thought="", tool_calls=[]))
             return
-        if streamed_reasoning:
-            spec = spec.model_copy(update={"reasoning": streamed_reasoning})
-        yield LlmTurnComplete(spec=spec)
+        if streamed_text:
+            result = replace(result, text=streamed_text)
+        yield LlmTurnComplete(result=result)
+
+    def _create_kwargs(self, history: list[Message], *, temperature: float) -> dict[str, Any]:
+        return {
+            "messages": _build_chat_messages(history),
+            "tools": [GENERATE_IMAGE_TOOL],
+            "tool_choice": "auto",
+            "max_tokens": _MAX_TOKENS,
+            "temperature": temperature,
+            "top_p": self._top_p,
+            "top_k": self._top_k,
+            "repeat_penalty": self._repeat_penalty,
+        }
 
     async def _stream_once(
         self, history: list[Message], *, temperature: float
@@ -400,22 +350,17 @@ class LlmService:
         llm = self._llm
         assert llm is not None
 
-        messages = _build_chat_messages(history)
+        kwargs = self._create_kwargs(history, temperature=temperature)
         loop = asyncio.get_running_loop()
 
         def _open_stream() -> Any:
-            return llm.create_chat_completion(
-                messages=messages,
-                max_tokens=_MAX_TOKENS,
-                temperature=temperature,
-                stream=True,
-            )
+            return llm.create_chat_completion(stream=True, **kwargs)
 
         # 生成本体（prompt eval + decode）はブロッキングなので executor で回す。
         stream = await loop.run_in_executor(None, _open_stream)
 
-        all_text = ""
-        emitted = ""
+        parser = NativeToolStream()
+        streamed = ""
         while True:
             chunk = await loop.run_in_executor(None, _safe_next, stream)
             if chunk is _STOP:
@@ -423,27 +368,38 @@ class LlmService:
             piece = chunk["choices"][0]["delta"].get("content")
             if not piece:
                 continue
-            all_text += piece
-            decoded, _ended = _decode_partial_reasoning(all_text)
-            if len(decoded) > len(emitted):
-                yield LlmTextDelta(delta=decoded[len(emitted) :])
-                emitted = decoded
+            new_text = parser.feed(piece)
+            if new_text:
+                streamed += new_text
+                yield LlmTextDelta(delta=new_text)
+        # マーカーが来ないまま終わった場合に保留していた末尾を確定して流す。
+        tail = parser.flush()
+        if tail:
+            streamed += tail
+            yield LlmTextDelta(delta=tail)
 
-        spec = _parse_turn_spec(all_text)
-        yield LlmTurnComplete(spec=spec)
+        parsed = parse_native_output(parser.raw)
+        # 生出力は破綻パターン同定に必須。thought は UI 非表示なのでログにだけ残す。
+        logger.info("Gemma raw output: %r", parser.raw)
+        if parsed.thought:
+            logger.info("Gemma thought (hidden): %s", parsed.thought)
+        # 永続化テキストは「実際に流したテキスト」に一致させ、逐次表示との乖離を排除する。
+        # thought / tool_calls のみ parse から取る。
+        yield LlmTurnComplete(result=_build_result(parsed, text=streamed.strip()))
 
-    def _sync_turn(self, history: list[Message], temperature: float) -> LlmTurnSpec:
+    def _sync_turn(self, history: list[Message]) -> LlmTurnResult:
         llm = self._llm
         assert llm is not None
 
-        messages = _build_chat_messages(history)
         out = llm.create_chat_completion(
-            messages=messages,
-            max_tokens=_MAX_TOKENS,
-            temperature=temperature,
+            **self._create_kwargs(history, temperature=self._temperature)
         )
         text = out["choices"][0]["message"].get("content") or ""
-        return _parse_turn_spec(text)
+        parsed = parse_native_output(text)
+        logger.info("Gemma raw output (retry): %r", text)
+        if parsed.thought:
+            logger.info("Gemma thought (hidden, retry): %s", parsed.thought)
+        return _build_result(parsed)
 
 
 _STOP: Final[object] = object()

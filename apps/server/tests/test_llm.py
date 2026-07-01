@@ -1,39 +1,133 @@
 from __future__ import annotations
 
-from cocktail_server.services.llm import _decode_partial_reasoning
+from datetime import UTC, datetime
+
+import pytest
+from cocktail_server.schemas.messages import Message, TextPart, ToolCallPart
+from cocktail_server.services.llm import (
+    _build_result,
+    _reconstruct_assistant_turn,
+    parse_gguf_ref,
+)
+from cocktail_server.services.native_tools import ParsedToolCall, ParsedTurn
+from pydantic import ValidationError
+
+# --- parse_gguf_ref --------------------------------------------------------------
 
 
-def test_decode_reasoning_plain_japanese() -> None:
-    text = '{"reasoning": "やりますね", "tool_calls": []}'
-    decoded, ended = _decode_partial_reasoning(text)
-    assert ended is True
-    assert decoded == "やりますね"
+def test_parse_gguf_ref_repo_file() -> None:
+    assert parse_gguf_ref("org/repo:model.gguf") == ("org/repo", "model.gguf")
 
 
-def test_decode_reasoning_combines_surrogate_pair() -> None:
-    # 😀(U+1F600) は JSON では 😀 のサロゲートペア。結合して 1 文字にする。
-    text = '{"reasoning": "やった\\ud83d\\ude00ね", "tool_calls": []}'
-    decoded, ended = _decode_partial_reasoning(text)
-    assert ended is True
-    assert "\U0001f600" in decoded
-    # lone surrogate が混じると SSE の UTF-8 encode で落ちる → 残っていないこと
-    assert "\ud83d" not in decoded
-    assert "\ude00" not in decoded
-    decoded.encode("utf-8")  # raise しない
+def test_parse_gguf_ref_non_gguf_suffix_returns_none() -> None:
+    assert parse_gguf_ref("org/repo:model.bin") is None
 
 
-def test_decode_reasoning_holds_incomplete_high_surrogate() -> None:
-    # 下位サロゲートがまだ来ていない場合は、上位サロゲートを emit せず手前まで返して保留する。
-    text = '{"reasoning": "x\\ud83d'
-    decoded, ended = _decode_partial_reasoning(text)
-    assert ended is False
-    assert decoded == "x"
-    decoded.encode("utf-8")
+def test_parse_gguf_ref_plain_repo_returns_none() -> None:
+    assert parse_gguf_ref("org/repo") is None
 
 
-def test_decode_reasoning_streams_incrementally_until_close() -> None:
-    # 閉じクォート未到達なら ended=False で、到達済み分だけ返す。
-    partial = '{"reasoning": "途中まで'
-    decoded, ended = _decode_partial_reasoning(partial)
-    assert ended is False
-    assert decoded == "途中まで"
+# --- _build_result: ParsedTurn -> 検証済み LlmTurnResult --------------------------
+
+
+def _turn(*calls: ParsedToolCall, text: str = "", thought: str = "") -> ParsedTurn:
+    return ParsedTurn(text=text, thought=thought, tool_calls=list(calls))
+
+
+def test_build_result_validates_generate_image_call() -> None:
+    result = _build_result(
+        _turn(
+            ParsedToolCall(
+                name="generate_image",
+                args={"positive": "1girl, solo", "aspect_ratio": "portrait"},
+            ),
+            text="出すよ",
+            thought="内緒の思考",
+        )
+    )
+    assert result.text == "出すよ"
+    assert result.thought == "内緒の思考"
+    assert len(result.tool_calls) == 1
+    call = result.tool_calls[0]
+    assert call.positive == "1girl, solo"
+    assert call.negative_extra == ""  # 省略時は空
+    assert call.seed_action == "new"  # 省略時は既定
+
+
+def test_build_result_ignores_unknown_tool() -> None:
+    # Phase 1 は generate_image のみ配線。未知ツールは無視する。
+    result = _build_result(_turn(ParsedToolCall(name="search_tags", args={"q": "cat"})))
+    assert result.tool_calls == []
+
+
+def test_build_result_takes_only_first_generate_image() -> None:
+    result = _build_result(
+        _turn(
+            ParsedToolCall(
+                name="generate_image", args={"positive": "a", "aspect_ratio": "portrait"}
+            ),
+            ParsedToolCall(name="generate_image", args={"positive": "b", "aspect_ratio": "square"}),
+        )
+    )
+    assert [c.positive for c in result.tool_calls] == ["a"]
+
+
+def test_build_result_empty_positive_raises() -> None:
+    with pytest.raises(ValidationError):
+        _build_result(
+            _turn(
+                ParsedToolCall(
+                    name="generate_image", args={"positive": "", "aspect_ratio": "portrait"}
+                )
+            )
+        )
+
+
+def test_build_result_invalid_aspect_ratio_raises() -> None:
+    with pytest.raises(ValidationError):
+        _build_result(
+            _turn(
+                ParsedToolCall(
+                    name="generate_image", args={"positive": "1girl", "aspect_ratio": "wide"}
+                )
+            )
+        )
+
+
+# --- _reconstruct_assistant_turn -------------------------------------------------
+
+
+def _assistant(parts: list) -> Message:  # type: ignore[type-arg]
+    return Message(
+        id="a1",
+        conversation_id="c1",
+        role="assistant",
+        parts=parts,
+        created_at=datetime.now(UTC),
+    )
+
+
+def test_reconstruct_includes_text_and_positive_note_without_special_tokens() -> None:
+    msg = _assistant(
+        [
+            TextPart(text="出したよ"),
+            ToolCallPart(
+                id="c1",
+                name="generate_image",
+                args={
+                    "positive": "1girl, red hair",
+                    "aspect_ratio": "portrait",
+                    "seed_action": "new",
+                },
+                status="done",
+            ),
+        ]
+    )
+    out = _reconstruct_assistant_turn(msg)
+    assert "出したよ" in out
+    assert "1girl, red hair" in out  # 「n個前」参照のため過去 positive を見せる
+    assert "<|tool_call>" not in out  # native 特殊トークンは履歴へ注入しない
+
+
+def test_reconstruct_text_only_turn() -> None:
+    assert _reconstruct_assistant_turn(_assistant([TextPart(text="ありがとう")])) == "ありがとう"

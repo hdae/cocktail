@@ -14,46 +14,22 @@ ASPECT_RATIO_RESOLUTIONS: dict[AspectRatio, tuple[int, int]] = {
 }
 
 
-class PromptSpec(BaseModel):
-    """Anima 向けポジ/ネガ本体。`GenerateImageCall` の内部形としても流用する。"""
-
-    model_config = ConfigDict(strict=True, extra="forbid")
-
-    positive: str = Field(min_length=1)
-    negative: str = Field(min_length=1)
-    rationale: str = ""
-
-
 class GenerateImageCall(BaseModel):
-    """Gemma が選ぶ `generate_image` ツール呼び出し。
+    """Gemma が native tool 形式で出す `generate_image` 呼び出しの検証済み表現。
 
-    `aspect_ratio` はプリセット指定。CFG / steps は技術ノブなのでサーバがモード
-    (base / Turbo)で決め、Gemma には振らせない。seed 値も Gemma に扱わせず、
-    `seed_action` ("new"=採番し直す / "keep"=前回と同じ seed を維持) の意図だけ
-    選ばせる。実際の seed 値はサーバが `seed_resolver.resolve_seed` で決める。
+    `positive` は Danbooru タグ本文。`negative_extra` はこの画像固有の追加ネガのみで、
+    固定ベース(`prompt_builder.NEGATIVE_DEFAULT`)はサーバが `compose_negative` で前置する
+    （モデルに巨大な negative を自由生成させると temp 次第でリピートループに陥るため）。
+    CFG / steps はモード(base/Turbo)でサーバが決め、seed 値も `seed_action` の意図だけ
+    選ばせて実値はサーバが `seed_resolver.resolve_seed` で決める。
     """
 
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    name: Literal["generate_image"] = "generate_image"
     positive: str = Field(min_length=1)
-    negative: str = Field(min_length=1)
+    negative_extra: str = ""
     aspect_ratio: AspectRatio = "portrait"
     seed_action: SeedAction = "new"
-    rationale: str = ""
-
-
-class LlmTurnSpec(BaseModel):
-    """Gemma の 1 ターン出力。日本語テキスト + 0 or 1 件のツール呼び出し。
-
-    `reasoning` は UI にそのまま出すユーザ向け日本語テキスト。
-    `tool_calls` が空ならツール実行せずに閉じる（「ありがとう」などへの返答）。
-    """
-
-    model_config = ConfigDict(strict=True, extra="forbid")
-
-    reasoning: str = ""
-    tool_calls: list[GenerateImageCall] = Field(default_factory=list, max_length=1)
 
 
 class GenerateRequest(BaseModel):

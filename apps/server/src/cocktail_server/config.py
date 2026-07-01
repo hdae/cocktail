@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     # 既定は無検閲(heretic)12B。検閲版を使うなら公式 QAT 12B に差し替える:
     #   google/gemma-4-12B-it-qat-q4_0-gguf:gemma-4-12b-it-qat-q4_0.gguf
     llm_model_id: str = "igorls/gemma-4-12B-it-heretic-GGUF:gemma-4-12B-it-heretic-Q4_K_M.gguf"
+    # LLM サンプリング。会話品質のため temp>0 を既定にする（temp 0 は長いタグ列で
+    # 破滅的なリピートループを誘発することを実機確認済み。repeat_penalty も併用）。
+    # 会話・ツール引数生成の双方でこの設定を使う。
+    llm_temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    llm_top_p: float = Field(default=0.95, ge=0.0, le=1.0)
+    llm_top_k: int = Field(default=40, ge=0)
+    llm_repeat_penalty: float = Field(default=1.1, ge=0.0, le=2.0)
     # Anima のベース(diffusers 形式リポ)。VAE / Qwen3 text encoder / tokenizer /
     # scheduler / modular pipeline 定義をここから読む。派生(WAI-Anima 等)は DiT だけを
     # 差し替えて使うため、ベースは常にこのリポを共有する。
