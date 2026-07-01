@@ -1,6 +1,7 @@
 import type { ContentPart, ToolCallPart } from "@cocktail/api-types";
 
 import { cn } from "../lib/utils";
+import { Markdown } from "./Markdown";
 
 interface Props {
   part: ContentPart;
@@ -10,7 +11,7 @@ interface Props {
 export function MessagePart({ part, onImageClick }: Props): JSX.Element | null {
   switch (part.type) {
     case "text":
-      return <p className="whitespace-pre-wrap leading-relaxed">{part.text}</p>;
+      return <Markdown text={part.text} />;
     case "image": {
       const src = `/api/images/${part.image_id}.webp`;
       const imageId = part.image_id;
