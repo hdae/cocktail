@@ -83,7 +83,7 @@ def test_multi_turn_user_labels_are_sequential_and_last_is_current() -> None:
     assert messages[3]["content"] == build_user_message("色違いで", turn_index=2, is_current=True)
 
 
-def test_assistant_is_reconstructed_as_plain_text_with_positive_note() -> None:
+def test_assistant_is_reconstructed_in_native_tool_call_format() -> None:
     image_id = "11111111-1111-1111-1111-111111111111"
     history = [_user("初回", mid="u1"), _assistant_with_image(image_id), _user("調整", mid="u2")]
     messages = _build_chat_messages(history)
@@ -92,9 +92,10 @@ def test_assistant_is_reconstructed_as_plain_text_with_positive_note() -> None:
     content = assistant["content"]
     assert isinstance(content, str)
     assert "生成しました" in content
-    # 「n個前」参照のため過去 positive タグを見せる。native 特殊トークンは注入しない。
+    # 過去ツール呼び出しはモデルが実際に出す native 形式で replay する（模倣ドリフト対策）。
+    # positive タグも含むので「n個前」参照・再調整に使える。
+    assert "<|tool_call>call:generate_image{" in content
     assert "score_7, safe, 1girl" in content
-    assert "<|tool_call>" not in content
     # 全 content が str（tokenizer 経路のみ）
     assert all(isinstance(m["content"], str) for m in messages)
 

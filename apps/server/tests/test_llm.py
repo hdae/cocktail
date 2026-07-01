@@ -107,7 +107,7 @@ def _assistant(parts: list) -> Message:  # type: ignore[type-arg]
     )
 
 
-def test_reconstruct_includes_text_and_positive_note_without_special_tokens() -> None:
+def test_reconstruct_replays_tool_call_in_native_format() -> None:
     msg = _assistant(
         [
             TextPart(text="出したよ"),
@@ -126,7 +126,9 @@ def test_reconstruct_includes_text_and_positive_note_without_special_tokens() ->
     out = _reconstruct_assistant_turn(msg)
     assert "出したよ" in out
     assert "1girl, red hair" in out  # 「n個前」参照のため過去 positive を見せる
-    assert "<|tool_call>" not in out  # native 特殊トークンは履歴へ注入しない
+    # 記述注記ではなく native 形式で replay する（多ターンの形式ドリフトを断つため）
+    assert "<|tool_call>call:generate_image{" in out
+    assert '<|"|>portrait<|"|>' in out
 
 
 def test_reconstruct_text_only_turn() -> None:

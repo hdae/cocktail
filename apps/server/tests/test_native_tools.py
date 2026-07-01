@@ -8,6 +8,7 @@ from __future__ import annotations
 from cocktail_server.services.native_tools import (
     NativeToolStream,
     parse_native_output,
+    render_tool_call,
 )
 
 # 実機観測: ペルソナ + tools=auto + 画像要求（会話前置き → thought → tool_call）
@@ -181,3 +182,35 @@ def test_unwrapped_last_value_scans_to_end() -> None:
     call = parse_native_output(raw).tool_calls[0]
     assert call.args["aspect_ratio"] == "portrait"
     assert call.args["positive"] == "1girl, solo, smile"
+
+
+def test_ascii_quoted_values_are_unwrapped() -> None:
+    # 多ターンで崩れる `aspect_ratio: "portrait"`（ASCII クオート + colon 後空白）を吸収する。
+    raw = (
+        '<|tool_call>call:generate_image{aspect_ratio: "portrait", '
+        'positive: "1girl, solo", seed_action: "keep"}<tool_call|>'
+    )
+    call = parse_native_output(raw).tool_calls[0]
+    assert call.args["aspect_ratio"] == "portrait"
+    assert call.args["seed_action"] == "keep"
+    assert call.args["positive"] == "1girl, solo"
+
+
+def test_double_wrapped_ascii_quotes_inside_native_wrap_are_stripped() -> None:
+    raw = '<|tool_call>call:generate_image{aspect_ratio:<|"|>"portrait"<|"|>}<tool_call|>'
+    assert parse_native_output(raw).tool_calls[0].args["aspect_ratio"] == "portrait"
+
+
+def test_caption_internal_quotes_are_preserved() -> None:
+    # 前後が同じクオートで挟まれている時だけ剥がす。キャプション途中の引用符は温存。
+    raw = '<|tool_call>call:generate_image{positive:<|"|>1girl, a sign says "hi"<|"|>}<tool_call|>'
+    assert parse_native_output(raw).tool_calls[0].args["positive"] == '1girl, a sign says "hi"'
+
+
+def test_render_tool_call_round_trips_through_parse() -> None:
+    # render_tool_call と parse_native_output は対（履歴 replay がそのまま読み戻せる）。
+    args = {"aspect_ratio": "landscape", "positive": "1girl, solo, smile", "seed_action": "keep"}
+    rendered = render_tool_call("generate_image", args)
+    parsed = parse_native_output(rendered).tool_calls[0]
+    assert parsed.name == "generate_image"
+    assert parsed.args == args

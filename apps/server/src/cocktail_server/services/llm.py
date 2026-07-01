@@ -23,6 +23,7 @@ from cocktail_server.services.native_tools import (
     NativeToolStream,
     ParsedTurn,
     parse_native_output,
+    render_tool_call,
 )
 from cocktail_server.services.prompt_builder import (
     GENERATE_IMAGE_TOOL,
@@ -71,15 +72,16 @@ def _extract_user_text(msg: Message) -> str:
 
 
 def _reconstruct_assistant_turn(msg: Message) -> str:
-    """保存済み assistant Message を、Gemma に replay するプレーンテキストへ復元する。
+    """保存済み assistant Message を、Gemma に replay する形式へ復元する。
 
-    会話テキスト(TextPart) に加え、generate_image を出したターンは positive タグを
-    含む注記を添える（「n個前の絵」参照や再調整のために過去プロンプトを見せる）。
-    native の特殊トークン(`<|tool_call>` 等)は履歴へ注入しない（トークナイズ挙動が
-    生成時と食い違う危険があるため、安全なプレーンテキストで表現する）。
+    会話テキスト(TextPart) に加え、generate_image を出したターンは native 形式
+    (`<|tool_call>call:generate_image{...}<tool_call|>`) で replay する。過去ツール呼び出しを
+    記述的な注記で見せると、モデルがそれを真似て tool を呼ばなくなる／ASCII クオートに
+    崩れることが実機で確認されたため、モデル自身が出す形式に一致させて多ターンの形式
+    ドリフトを断つ。positive も含めるので「n個前の絵」参照・再調整に使える。
     """
     text = ""
-    image_note = ""
+    tool_repr = ""
     for p in msg.parts:
         if isinstance(p, TextPart):
             if not text:
@@ -87,14 +89,15 @@ def _reconstruct_assistant_turn(msg: Message) -> str:
         elif isinstance(p, ToolCallPart):
             if p.name != "generate_image" or p.status != "done":
                 continue
-            positive = str(p.args.get("positive", ""))
-            aspect = str(p.args.get("aspect_ratio", "portrait"))
-            seed_action = str(p.args.get("seed_action", "new"))
-            image_note = (
-                f'[generated an image — positive: "{positive}"; '
-                f"aspect_ratio: {aspect}; seed_action: {seed_action}]"
+            tool_repr = render_tool_call(
+                "generate_image",
+                {
+                    "aspect_ratio": str(p.args.get("aspect_ratio", "portrait")),
+                    "positive": str(p.args.get("positive", "")),
+                    "seed_action": str(p.args.get("seed_action", "new")),
+                },
             )
-    segments = [s for s in (text, image_note) if s]
+    segments = [s for s in (text, tool_repr) if s]
     return "\n\n".join(segments) or "(no response)"
 
 

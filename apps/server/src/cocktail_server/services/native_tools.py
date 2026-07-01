@@ -128,6 +128,19 @@ class NativeToolStream:
         return new
 
 
+def _unquote(value: str) -> str:
+    """値の前後の空白と、1 層だけの ASCII クオート（"..." / '...'）を剥がす。
+
+    多ターンで形式がドリフトし、native の `<|"|>...<|"|>` の代わりに `"portrait"` のような
+    ASCII クオートで enum を包むことがある（履歴の見せ方が主因だが保険で吸収する）。前後が
+    同じクオートで挟まれている時だけ剥がすので、キャプション途中の引用符は温存される。
+    """
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1].strip()
+    return value
+
+
 def _parse_tool_dsl(inner: str) -> ParsedToolCall | None:
     """`call:NAME{key:<|"|>val<|"|>,key2:bare,...}` の中身を dict へ。名前無しなら None。
 
@@ -167,19 +180,30 @@ def _parse_tool_dsl(inner: str) -> ParsedToolCall | None:
             vstart = i + len(STRING_WRAP)
             vend = body.find(STRING_WRAP, vstart)
             if vend == -1:
-                args[key] = body[vstart:]
+                args[key] = _unquote(body[vstart:])
                 break
-            args[key] = body[vstart:vend]
+            args[key] = _unquote(body[vstart:vend])
             i = vend + len(STRING_WRAP)
         else:
             # 素値（enum 等）。次の "key:" 開始までを値にする。カンマ単体では切らないので、
             # モデルが文字列を STRING_WRAP で包まずカンマ入りで吐いても silent truncation
-            # にならない（次のキーが来なければ末尾まで）。
+            # にならない（次のキーが来なければ末尾まで）。ASCII クオート付きの enum も剥がす。
             m = _NEXT_KEY_RE.search(body, i)
             end = m.start() if m else n
-            args[key] = body[i:end].strip()
+            args[key] = _unquote(body[i:end])
             i = end
     return ParsedToolCall(name=name, args=args)
+
+
+def render_tool_call(name: str, args: dict[str, str]) -> str:
+    """`args` を native DSL のツール呼び出し文字列へ整形する（履歴 replay 用）。
+
+    `parse_native_output` と対。過去ターンをモデルが実際に出す native 形式で見せることで、
+    多ターンでの形式ドリフト（記述的注記を真似て tool を呼ばなくなる／ASCII クオートに崩れる）
+    を断つ。値は `<|"|>...<|"|>` で包む。
+    """
+    body = ",".join(f"{k}:{STRING_WRAP}{v}{STRING_WRAP}" for k, v in args.items())
+    return f"{TOOL_OPEN}call:{name}{{{body}}}{TOOL_CLOSE}"
 
 
 def parse_native_output(raw: str) -> ParsedTurn:
