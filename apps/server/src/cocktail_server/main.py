@@ -54,6 +54,23 @@ def _detect_vram_gb() -> float | None:
     return round(total / (1024**3), 2)
 
 
+def _turbo_without_preload_warning(settings: Settings) -> str | None:
+    """Turbo 有効なのに preload 無効な構成を検出し、警告文を返す（問題なければ None）。
+
+    Turbo LoRA のパス解決/注入は `_run_preload` の中でしか行わないため、
+    `STARTUP_PRELOAD=false` だと LoRA 未注入のまま `turbo` 有効で生成要求され、
+    生成が毎回 fail-loud する。起動時にこの誤設定を loud に知らせるための最小ガード。
+    NOTE: 恒久対策は「パス解決(安価)」と「VRAM プリロード(GPU)」の分離。それまでの繋ぎ。
+    """
+    if settings.turbo_enabled and not settings.startup_preload:
+        return (
+            "IMAGE_TURBO_LORA is set but STARTUP_PRELOAD=false: the Turbo LoRA will not be "
+            "loaded, so image generation will fail. Enable STARTUP_PRELOAD or clear "
+            "IMAGE_TURBO_LORA."
+        )
+    return None
+
+
 def _resolve_residency_policy(settings: Settings) -> Policy:
     """`settings.residency_mode` が auto のときは VRAM で決定、それ以外はそのまま採用。"""
     if settings.residency_mode == "swap":
@@ -170,6 +187,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.ready_event = ready_event
     app.state.startup_state = initial_state
     app.state.startup_error = None
+
+    turbo_warning = _turbo_without_preload_warning(settings)
+    if turbo_warning is not None:
+        logger.warning(turbo_warning)
 
     preload_task: asyncio.Task[None] | None = None
     if settings.startup_preload:

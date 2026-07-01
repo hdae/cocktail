@@ -121,10 +121,14 @@ class ImageGenService:
     def _inject_turbo_lora(self) -> None:
         """Turbo LoRA を PEFT アダプタとして DiT に注入する（cold load 時に一度だけ）。
 
-        変換済み state dict を `load_lora_weights` で注入し、実際に載ったかを
-        `get_list_adapters` で確認する（キー不一致だと 0 件ロードでも例外は出ないため、
-        silent no-op を fail-loud に変える）。以後は生成毎の `enable/disable_lora` で
-        無再ロードにトグルする。
+        変換済み state dict を `load_lora_weights` で注入し、実際に **DiT(transformer)**
+        へ載ったかを `get_list_adapters` で確認する。キー不一致だと 0 件ロードでも例外は
+        出ず、しかも全体の union だけ見ると DiT が丸ごと未適用でも text_conditioner だけで
+        通ってしまう（劣化 Turbo の無言継続）。DiT は Turbo の主対象(896/1016 キー)なので
+        transformer コンポーネントへの適用を必須にして fail-loud に変える。
+        NOTE: transformer 内の一部レイヤーだけが落ちる部分不一致までは検出しない（層単位の
+        件数照合は happy path を壊す誤検出リスクがあるため、起動アーキ整理と同時に後日入れる）。
+        以後は生成毎の `enable/disable_lora` で無再ロードにトグルする。
         """
         if not self._turbo_lora_path:
             return
@@ -133,9 +137,13 @@ class ImageGenService:
         t0 = perf_counter_ns()
         state = lora_state_dict_for(Path(self._turbo_lora_path))
         self._pipe.load_lora_weights(state, adapter_name=_TURBO_ADAPTER)
-        injected = {a for names in self._pipe.get_list_adapters().values() for a in names}
-        if _TURBO_ADAPTER not in injected:
-            raise RuntimeError(f"Turbo LoRA を適用できませんでした: {self._turbo_lora_path}")
+        adapters_by_component: dict[str, list[str]] = self._pipe.get_list_adapters()
+        applied = sorted(c for c, names in adapters_by_component.items() if _TURBO_ADAPTER in names)
+        if _TURBO_ADAPTER not in adapters_by_component.get("transformer", []):
+            raise RuntimeError(
+                f"Turbo LoRA が DiT(transformer)に適用されていません: "
+                f"{self._turbo_lora_path} (適用コンポーネント={applied})"
+            )
         self._pipe.set_adapters([_TURBO_ADAPTER], [self._turbo_lora_strength])
         self._turbo_loaded = True
         logger.info(
