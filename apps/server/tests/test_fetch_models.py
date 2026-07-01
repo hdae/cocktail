@@ -378,18 +378,95 @@ def test_ensure_turbo_lora_downloads_from_civitai(
     assert resolved.parent == settings.weights_dir / "civitai"
 
 
-def test_ensure_all_resolves_both_dit_and_turbo_lora(
+def _version_file(name: str, body: bytes, download_url: str) -> _FakeResponse:
+    return _FakeResponse(
+        status_code=200,
+        json_data={
+            "files": [
+                {
+                    "type": "Model",
+                    "primary": True,
+                    "name": name,
+                    "downloadUrl": download_url,
+                    "hashes": {"SHA256": hashlib.sha256(body).hexdigest()},
+                }
+            ]
+        },
+    )
+
+
+class _RoutingFakeClient:
+    """version_id / downloadUrl の部分一致でレスポンスを振り分ける fake client。
+
+    DiT と LoRA を **別バージョン ID** で解決させ、両者が別ファイルに落ちることを検証する
+    ために使う（単一固定レスポンスだと両者が同一パスに解決され、取り違えを検知できない）。
+    """
+
+    def __init__(
+        self,
+        by_version: dict[str, _FakeResponse],
+        by_download: dict[str, _FakeStreamResponse],
+    ) -> None:
+        self._by_version = by_version
+        self._by_download = by_download
+        self.get_calls: list[str] = []
+        self.stream_calls: list[str] = []
+
+    def get(self, url: str, headers: dict[str, str]) -> _FakeResponse:
+        self.get_calls.append(url)
+        for key, resp in self._by_version.items():
+            if key in url:
+                return resp
+        raise AssertionError(f"unexpected get url: {url}")
+
+    @contextmanager
+    def stream(
+        self, method: str, url: str, headers: dict[str, str]
+    ) -> Iterator[_FakeStreamResponse]:
+        self.stream_calls.append(url)
+        for key, resp in self._by_download.items():
+            if key in url:
+                yield resp
+                return
+        raise AssertionError(f"unexpected stream url: {url}")
+
+    def close(self) -> None:
+        pass
+
+
+def test_ensure_all_resolves_dit_and_turbo_to_distinct_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # DiT 派生(image_model_id)と Turbo LoRA を両方 Civitai から解決する。
-    body = b"shared-fake-weights"
-    client, _, _ = _prepare_client(body=body)
+    # DiT 派生(version 2983680)と Turbo LoRA(version 2979642)を別々に Civitai 解決する。
+    dit_body = b"dit-weights-payload"
+    lora_body = b"turbo-lora-payload"
+    dit_dl = "https://civitai.com/api/download/models/2983680"
+    lora_dl = "https://civitai.com/api/download/models/2979642"
+    client = _RoutingFakeClient(
+        by_version={
+            "2983680": _version_file("waiANIMA_v10.safetensors", dit_body, dit_dl),
+            "2979642": _version_file("anima-turbo-lora-v0-2.safetensors", lora_body, lora_dl),
+        },
+        by_download={
+            "2983680": _FakeStreamResponse(
+                status_code=200, chunks=[dit_body], content_length=len(dit_body)
+            ),
+            "2979642": _FakeStreamResponse(
+                status_code=200, chunks=[lora_body], content_length=len(lora_body)
+            ),
+        },
+    )
     monkeypatch.setattr(fetch_models, "_http_client", lambda timeout=30.0: client)
     monkeypatch.setattr(fetch_models, "_ensure_llm", lambda _: None)
     settings = _settings(tmp_path).model_copy(
         update={"image_turbo_lora": "urn:air:anima:lora:civitai:2560840@2979642"}
     )
+
     resolved = ensure_all(settings)
+
     assert resolved.image_dit_path is not None
     assert resolved.turbo_lora_path is not None
-    assert resolved.turbo_lora_path.read_bytes() == body
+    # DiT と LoRA は別ファイルに解決される（取り違え退行を検知するための核心）。
+    assert resolved.image_dit_path != resolved.turbo_lora_path
+    assert resolved.image_dit_path.read_bytes() == dit_body
+    assert resolved.turbo_lora_path.read_bytes() == lora_body

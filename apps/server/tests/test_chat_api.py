@@ -78,11 +78,18 @@ class FakeLlm:
 
 
 class FakeImageGen:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
     async def generate(self, **kwargs: Any) -> PILImage.Image:
+        self.calls.append(kwargs)
         return PILImage.new("RGB", (kwargs["width"], kwargs["height"]), (0, 128, 255))
 
     def unload(self) -> None:
         return None
+
+
+_TURBO_URN = "urn:air:anima:lora:civitai:2560840@2979642"
 
 
 @pytest.fixture
@@ -562,3 +569,29 @@ async def test_turn_registry_concurrent_subscribers_receive_same_events() -> Non
     await asyncio.wait_for(asyncio.gather(t1, t2), timeout=1.0)
     assert collected[0] == ["user_saved", "assistant_start", "done"]
     assert collected[1] == ["user_saved", "assistant_start", "done"]
+
+
+def test_chat_base_mode_passes_turbo_false(client: TestClient) -> None:
+    """conftest が base モード固定なので、orchestrator は turbo=False を渡す。"""
+    _chat(client, {"parts": [{"type": "text", "text": "描いて"}]})
+    calls = client.app.state.image_gen.calls  # type: ignore[attr-defined]
+    assert calls[-1]["turbo"] is False
+
+
+def test_chat_turbo_mode_passes_turbo_true(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """IMAGE_TURBO_LORA を設定すると orchestrator は turbo=True で image_gen を呼ぶ。"""
+    monkeypatch.setenv("IMAGES_DIR", str(tmp_path / "images"))
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "models"))
+    monkeypatch.setenv("WEIGHTS_DIR", str(tmp_path / "weights"))
+    monkeypatch.setenv("STARTUP_PRELOAD", "false")
+    monkeypatch.setenv("IMAGE_TURBO_LORA", _TURBO_URN)
+    get_settings.cache_clear()
+    app = create_app()
+    fake = FakeImageGen()
+    with TestClient(app) as c:
+        app.state.llm = FakeLlm()
+        app.state.image_gen = fake
+        _chat(c, {"parts": [{"type": "text", "text": "turbo で描いて"}]})
+    get_settings.cache_clear()
+
+    assert fake.calls[-1]["turbo"] is True
