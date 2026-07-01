@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import logging
+from pathlib import Path
 from time import perf_counter_ns
 from typing import Any
 
@@ -10,6 +11,9 @@ import torch
 from PIL.Image import Image
 
 logger = logging.getLogger(__name__)
+
+# 注入する Turbo LoRA アダプタ名。単一固定なのでこの1個だけを載せる。
+_TURBO_ADAPTER = "turbo"
 
 
 class ImageGenService:
@@ -22,9 +26,20 @@ class ImageGenService:
     `from_single_file` が無いため、この変換が単体ロードの代替になる。
     """
 
-    def __init__(self, base_model_id: str, dit_path: str | None = None) -> None:
+    def __init__(
+        self,
+        base_model_id: str,
+        dit_path: str | None = None,
+        *,
+        turbo_lora_path: str | None = None,
+        turbo_lora_strength: float = 1.0,
+    ) -> None:
         self._base_model_id = base_model_id
         self._dit_path = dit_path
+        self._turbo_lora_path = turbo_lora_path
+        self._turbo_lora_strength = turbo_lora_strength
+        # Turbo LoRA が実際に DiT へ注入されたか。cold load で確定する。
+        self._turbo_loaded = False
         self._pipe: Any = None
         self._on_cuda: bool = False
         # 現在 guider に載っている guidance_scale。cfg 変更時のみ guider を作り直す。
@@ -38,6 +53,16 @@ class ImageGenService:
         if self._pipe is not None:
             raise RuntimeError("cannot change dit_path after the pipeline is loaded")
         self._dit_path = dit_path
+
+    def set_turbo_lora(self, path: str | None, strength: float) -> None:
+        """ロード前に Turbo LoRA(単体 .safetensors)のパス/強度を差し替える。
+
+        `None`/空文字 のときは Turbo 無効(base 品質)。cold load 時に注入される。
+        """
+        if self._pipe is not None:
+            raise RuntimeError("cannot change turbo lora after the pipeline is loaded")
+        self._turbo_lora_path = path
+        self._turbo_lora_strength = strength
 
     def is_loaded(self) -> bool:
         return self._pipe is not None and self._on_cuda
@@ -91,6 +116,34 @@ class ImageGenService:
             (t3 - t2) / 1_000_000,
             (t3 - t0) / 1_000_000,
         )
+        self._inject_turbo_lora()
+
+    def _inject_turbo_lora(self) -> None:
+        """Turbo LoRA を PEFT アダプタとして DiT に注入する（cold load 時に一度だけ）。
+
+        変換済み state dict を `load_lora_weights` で注入し、実際に載ったかを
+        `get_list_adapters` で確認する（キー不一致だと 0 件ロードでも例外は出ないため、
+        silent no-op を fail-loud に変える）。以後は生成毎の `enable/disable_lora` で
+        無再ロードにトグルする。
+        """
+        if not self._turbo_lora_path:
+            return
+        from cocktail_server.services.lora_convert import lora_state_dict_for
+
+        t0 = perf_counter_ns()
+        state = lora_state_dict_for(Path(self._turbo_lora_path))
+        self._pipe.load_lora_weights(state, adapter_name=_TURBO_ADAPTER)
+        injected = {a for names in self._pipe.get_list_adapters().values() for a in names}
+        if _TURBO_ADAPTER not in injected:
+            raise RuntimeError(f"Turbo LoRA を適用できませんでした: {self._turbo_lora_path}")
+        self._pipe.set_adapters([_TURBO_ADAPTER], [self._turbo_lora_strength])
+        self._turbo_loaded = True
+        logger.info(
+            "inject turbo lora: %s (strength=%.2f) %.0f ms",
+            self._turbo_lora_path,
+            self._turbo_lora_strength,
+            (perf_counter_ns() - t0) / 1_000_000,
+        )
 
     def evict_to_cpu(self) -> None:
         """pipe を CPU RAM に退避させ VRAM を解放する。次の load は warm 経路になる。
@@ -126,6 +179,7 @@ class ImageGenService:
         self._pipe = None
         self._on_cuda = False
         self._guider_cfg = None
+        self._turbo_loaded = False
         gc.collect()
         t1 = perf_counter_ns()
         if torch.cuda.is_available():
@@ -148,6 +202,7 @@ class ImageGenService:
         steps: int,
         cfg: float,
         seed: int | None,
+        turbo: bool = False,
     ) -> Image:
         return await asyncio.to_thread(
             self._generate_sync,
@@ -158,6 +213,7 @@ class ImageGenService:
             steps=steps,
             cfg=cfg,
             seed=seed,
+            turbo=turbo,
         )
 
     def _apply_cfg(self, cfg: float) -> None:
@@ -173,6 +229,20 @@ class ImageGenService:
         self._pipe.update_components(guider=ClassifierFreeGuidance(guidance_scale=cfg))
         self._guider_cfg = cfg
 
+    def _apply_turbo(self, turbo: bool) -> None:
+        """Turbo LoRA の有効/無効を生成ごとに切り替える（PEFT アダプタの enable/disable）。
+
+        LoRA 未注入で Turbo を要求されたら fail-loud（base モデルを Turbo の 10 step/CFG1 で
+        回すと破綻するため、静かに劣化させない）。
+        """
+        if self._turbo_loaded:
+            if turbo:
+                self._pipe.enable_lora()
+            else:
+                self._pipe.disable_lora()
+        elif turbo:
+            raise RuntimeError("Turbo が要求されましたが Turbo LoRA が読み込まれていません")
+
     def _generate_sync(
         self,
         *,
@@ -183,10 +253,12 @@ class ImageGenService:
         steps: int,
         cfg: float,
         seed: int | None,
+        turbo: bool,
     ) -> Image:
         if not self._on_cuda:
             self.load()
 
+        self._apply_turbo(turbo)
         self._apply_cfg(cfg)
 
         generator = None

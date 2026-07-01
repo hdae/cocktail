@@ -1,6 +1,7 @@
 """必要なモデルウェイトがディスクに揃っているか確認し、足りなければ取得する。
 
-呼び出し口は `ensure_all(settings) -> Path | None`。
+呼び出し口は `ensure_all(settings) -> EnsuredModels`（DiT 派生と Turbo LoRA の
+ローカル解決パスをまとめて返す）。
 
 処理方針:
 - LLM: HuggingFace リポ ID のみサポート。`snapshot_download` で取得（既存キャッシュがあれば即座に返る）。
@@ -318,15 +319,58 @@ def _ensure_image(settings: Settings) -> Path | None:
     return path
 
 
-def ensure_all(settings: Settings) -> Path | None:
-    """モデルをディスクに揃える。Image モデルが特定のローカルファイルで解決された場合はそのパスを返す。
+def _ensure_turbo_lora(settings: Settings) -> Path | None:
+    """Turbo LoRA(単体 .safetensors)をディスクに用意して解決する。
 
-    HF リポ経由のみ or ディレクトリ解決の場合はキャッシュパスを返す（呼び出し側は
-    `image_model_id` をそのまま ImageGenService に渡せば良い運用を前提）。
+    - 空文字 → Turbo 無効(base 品質)を意味し ``None`` を返す。
+    - ``urn:air:...`` → Civitai から LoRA 単体ファイルを取得。
+    - それ以外 → ローカル ``.safetensors`` パスとして存在確認のみ。
+
+    LoRA は単体ファイルなので diffusers 形式リポ(HF)は受け付けない。
+    """
+    value = settings.image_turbo_lora
+    if not value:
+        return None
+
+    if value.startswith("urn:air:"):
+        air = parse_air(value)
+        return _resolve_civitai(air, settings)
+
+    if _looks_like_hf_repo(value):
+        raise FetchError(
+            "IMAGE_TURBO_LORA は LoRA 単体(Civitai AIR か .safetensors パス)で"
+            f"指定してください: {value!r}"
+        )
+
+    path = Path(value).expanduser()
+    if not path.exists():
+        raise FetchError(f"IMAGE_TURBO_LORA に指定されたローカルパスが存在しません: {path}")
+    return path
+
+
+@dataclass(frozen=True)
+class EnsuredModels:
+    """`ensure_all` がディスクに用意し、ローカル解決したモデルのパス群。
+
+    ``None`` は「その要素は未指定/リポ解決でパス固定不要」を意味する。
+    """
+
+    image_dit_path: Path | None
+    turbo_lora_path: Path | None
+
+
+def ensure_all(settings: Settings) -> EnsuredModels:
+    """モデルをディスクに揃え、ローカルファイルで解決された派生/LoRA のパスを返す。
+
+    DiT 派生・Turbo LoRA が特定のローカルファイルで解決された場合はそのパスを、
+    そうでなければ ``None`` を返す（呼び出し側はベース/リポ解決に委ねる）。
     """
     settings.ensure_dirs()
     os.environ.setdefault("HF_HOME", str(settings.hf_home.resolve()))
 
     _ensure_llm(settings)
     _ensure_image_base(settings)
-    return _ensure_image(settings)
+    return EnsuredModels(
+        image_dit_path=_ensure_image(settings),
+        turbo_lora_path=_ensure_turbo_lora(settings),
+    )

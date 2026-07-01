@@ -12,4 +12,7 @@ def _skip_startup_preload(monkeypatch: pytest.MonkeyPatch) -> None:
     `IMAGES_DIR` や `HF_HOME` を上書きする。
     """
     monkeypatch.setenv("STARTUP_PRELOAD", "false")
+    # 既定は Turbo ON だが、テストは base モードで決定的にする（出荷既定に依存させない）。
+    # Turbo を検証したいテストは個別に IMAGE_TURBO_LORA を設定して cache_clear する。
+    monkeypatch.setenv("IMAGE_TURBO_LORA", "")
     get_settings.cache_clear()

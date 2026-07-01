@@ -84,8 +84,12 @@ async def _run_preload(
         app.state.startup_state = "downloading"
         logger.info("ensuring models on disk…")
         resolved = await asyncio.to_thread(fetch_models.ensure_all, settings)
-        if resolved is not None:
-            image_gen.set_dit_path(str(resolved))
+        if resolved.image_dit_path is not None:
+            image_gen.set_dit_path(str(resolved.image_dit_path))
+        if resolved.turbo_lora_path is not None:
+            image_gen.set_turbo_lora(
+                str(resolved.turbo_lora_path), settings.image_turbo_lora_strength
+            )
 
         app.state.startup_state = "loading"
         logger.info("preloading LLM…")

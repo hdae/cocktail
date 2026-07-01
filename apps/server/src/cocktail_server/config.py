@@ -51,7 +51,8 @@ class Settings(BaseSettings):
     # cold load 時に DiT へ PEFT アダプタとして注入し、生成時は steps/cfg を Turbo 値に切替える。
     # 形式は image_model_id と同じ: Civitai AIR(urn:air:...) / HF リポ / ローカル .safetensors。
     #   例(Anima Turbo LoRA): urn:air:anima:lora:civitai:2560840@2979642
-    image_turbo_lora: str = ""
+    # 既定は高速化を体感できるよう ON。品質重視に戻すなら .env で空文字にする。
+    image_turbo_lora: str = "urn:air:anima:lora:civitai:2560840@2979642"
     # Turbo LoRA の適用強度。1.0 が既定、0.7 程度まで下げると多様性が増す(蒸留は維持)。
     image_turbo_lora_strength: float = Field(default=1.0, ge=0.0, le=2.0)
     # Turbo 有効時の生成パラメータ。この LoRA は「CFG 1 / 8-12 steps」を推奨する蒸留 LoRA。

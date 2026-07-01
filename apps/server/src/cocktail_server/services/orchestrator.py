@@ -294,6 +294,7 @@ class ChatOrchestrator:
                     steps=steps,
                     cfg=cfg,
                     seed=seed,
+                    turbo=self._settings.turbo_enabled,
                 )
                 image_ms = (time.perf_counter_ns() - image_start) // 1_000_000
         except Exception:

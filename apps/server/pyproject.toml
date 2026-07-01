@@ -24,6 +24,8 @@ dependencies = [
     # Anima は公式 diffusers に modular pipeline として入ったが未リリースのため
     # git から取得する（コミット固定は [tool.uv.sources] を参照）
     "diffusers",
+    # Turbo LoRA を PEFT アダプタとして注入する diffusers の load_lora_weights 経路に必須。
+    "peft>=0.13",
     "huggingface-hub>=0.24",
     "httpx>=0.27",
     "sentencepiece>=0.2",

@@ -38,6 +38,7 @@ def _settings(tmp_path: Path) -> Settings:
         weights_dir=tmp_path / "weights",
         llm_model_id="igorls/gemma-4-12B-it-heretic-GGUF:gemma-4-12B-it-heretic-Q4_K_M.gguf",
         image_model_id="urn:air:anima:checkpoint:civitai:2544636@2983680",
+        image_turbo_lora="",
         civitai_token=None,
     )
 
@@ -185,10 +186,12 @@ def test_ensure_all_downloads_civitai_model(
     monkeypatch.setattr(fetch_models, "_ensure_llm", fake_ensure_llm)
 
     resolved = ensure_all(settings)
-    assert resolved is not None
+    dit = resolved.image_dit_path
+    assert dit is not None
     expected = settings.weights_dir / "civitai" / f"waianima-v10-{sha[:12]}.safetensors"
-    assert resolved == expected
-    assert resolved.read_bytes() == body
+    assert dit == expected
+    assert dit.read_bytes() == body
+    assert resolved.turbo_lora_path is None
     assert called_llm == [settings.llm_model_id]
 
 
@@ -206,7 +209,7 @@ def test_ensure_all_skips_when_sha_matches(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setattr(fetch_models, "_ensure_llm", lambda _: None)
 
     resolved = ensure_all(settings)
-    assert resolved == target
+    assert resolved.image_dit_path == target
     assert client.stream_calls == []  # stream は呼ばれない
 
 
@@ -235,7 +238,7 @@ def test_ensure_all_accepts_local_path(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setattr(fetch_models, "_ensure_llm", lambda _: None)
 
     resolved = ensure_all(settings)
-    assert resolved == local
+    assert resolved.image_dit_path == local
 
 
 def test_ensure_all_raises_when_local_path_missing(
@@ -266,7 +269,7 @@ def test_ensure_all_returns_none_without_derivative(
     settings = _settings(tmp_path)
     settings = settings.model_copy(update={"image_model_id": ""})
     monkeypatch.setattr(fetch_models, "_ensure_llm", lambda _: None)
-    assert ensure_all(settings) is None
+    assert ensure_all(settings).image_dit_path is None
 
 
 def test_ensure_image_base_downloads_base_repo(
@@ -338,3 +341,55 @@ def test_ensure_llm_rejects_non_gguf(tmp_path: Path) -> None:
     settings = _settings(tmp_path).model_copy(update={"llm_model_id": "google/gemma-4-E4B-it"})
     with pytest.raises(FetchError, match="gguf"):
         _REAL_ENSURE_LLM(settings)
+
+
+def test_ensure_turbo_lora_empty_returns_none(tmp_path: Path) -> None:
+    # 空文字は Turbo 無効(base 品質) → None。
+    assert fetch_models._ensure_turbo_lora(_settings(tmp_path)) is None
+
+
+def test_ensure_turbo_lora_accepts_local_path(tmp_path: Path) -> None:
+    local = tmp_path / "turbo.safetensors"
+    local.write_bytes(b"lora")
+    settings = _settings(tmp_path).model_copy(update={"image_turbo_lora": str(local)})
+    assert fetch_models._ensure_turbo_lora(settings) == local
+
+
+def test_ensure_turbo_lora_raises_when_local_missing(tmp_path: Path) -> None:
+    settings = _settings(tmp_path).model_copy(
+        update={"image_turbo_lora": str(tmp_path / "nope.safetensors")}
+    )
+    with pytest.raises(FetchError, match="存在しません"):
+        fetch_models._ensure_turbo_lora(settings)
+
+
+def test_ensure_turbo_lora_downloads_from_civitai(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = b"turbo-lora-bytes"
+    client, _, _ = _prepare_client(body=body)
+    monkeypatch.setattr(fetch_models, "_http_client", lambda timeout=30.0: client)
+    settings = _settings(tmp_path).model_copy(
+        update={"image_turbo_lora": "urn:air:anima:lora:civitai:2560840@2979642"}
+    )
+    resolved = fetch_models._ensure_turbo_lora(settings)
+    assert resolved is not None
+    assert resolved.read_bytes() == body
+    assert resolved.parent == settings.weights_dir / "civitai"
+
+
+def test_ensure_all_resolves_both_dit_and_turbo_lora(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # DiT 派生(image_model_id)と Turbo LoRA を両方 Civitai から解決する。
+    body = b"shared-fake-weights"
+    client, _, _ = _prepare_client(body=body)
+    monkeypatch.setattr(fetch_models, "_http_client", lambda timeout=30.0: client)
+    monkeypatch.setattr(fetch_models, "_ensure_llm", lambda _: None)
+    settings = _settings(tmp_path).model_copy(
+        update={"image_turbo_lora": "urn:air:anima:lora:civitai:2560840@2979642"}
+    )
+    resolved = ensure_all(settings)
+    assert resolved.image_dit_path is not None
+    assert resolved.turbo_lora_path is not None
+    assert resolved.turbo_lora_path.read_bytes() == body
