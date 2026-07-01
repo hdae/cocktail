@@ -65,6 +65,9 @@ class GenerateRequest(BaseModel):
     steps: int | None = Field(default=None, ge=1, le=100)
     cfg: float | None = Field(default=None, ge=0.0, le=20.0)
     seed: int | None = Field(default=None, ge=0, le=2**63 - 1)
+    # dev/デバッグ用の turbo 上書き。None なら settings 既定に従うが、cfg/steps を手動指定した
+    # ときは base 整合のため turbo を切る（CFG≈1 蒸留 LoRA を高 CFG で回す破綻を防ぐ）。
+    turbo: bool | None = Field(default=None)
 
 
 class GenerateParams(BaseModel):

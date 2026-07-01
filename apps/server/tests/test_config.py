@@ -27,3 +27,14 @@ def test_local_lora_path_also_enables_turbo() -> None:
     # AIR に限らずローカルパス指定でも Turbo は有効。
     s = Settings(image_turbo_lora="/data/loras/anima-turbo.safetensors")
     assert s.turbo_enabled is True
+
+
+def test_image_steps_cfg_explicit_turbo_override() -> None:
+    """`turbo` を明示すると turbo_enabled を上書きしてモードを固定できる（/generate の base 整合用）。"""
+    s = Settings(image_turbo_lora=_TURBO_URN, image_turbo_steps=8, image_turbo_cfg=1.0)
+    # turbo_enabled=True でも明示 False で base 値を返す。
+    assert s.image_steps_cfg(turbo=False) == (s.default_steps, s.default_cfg)
+    # 明示 True は Turbo 値。
+    assert s.image_steps_cfg(turbo=True) == (8, 1.0)
+    # None(既定) は turbo_enabled に従う。
+    assert s.image_steps_cfg() == (8, 1.0)

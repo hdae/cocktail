@@ -77,13 +77,16 @@ class Settings(BaseSettings):
         """Turbo LoRA が構成されているか。空文字なら base 品質で動く。"""
         return bool(self.image_turbo_lora)
 
-    def image_steps_cfg(self) -> tuple[int, float]:
-        """現在のモードから (steps, cfg) を決める。
+    def image_steps_cfg(self, *, turbo: bool | None = None) -> tuple[int, float]:
+        """モードから (steps, cfg) を決める。
 
         CFG と steps は技術的なノブなので Gemma には振らせず、base / Turbo の
         モードだけで一意に定める。Turbo は CFG≈1 の step&CFG 蒸留。
+        `turbo` を明示すると（`/generate` の base 整合など）その値でモードを固定し、
+        既定(None)は `turbo_enabled` に従う。turbo と生成パラメータを構造的に一致させる。
         """
-        if self.turbo_enabled:
+        use_turbo = self.turbo_enabled if turbo is None else turbo
+        if use_turbo:
             return self.image_turbo_steps, self.image_turbo_cfg
         return self.default_steps, self.default_cfg
 

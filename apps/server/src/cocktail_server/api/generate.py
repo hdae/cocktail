@@ -82,8 +82,16 @@ async def generate(req: GenerateRequest, request: Request) -> GenerateResponse:
     call = spec.tool_calls[0]
 
     preset_width, preset_height = ASPECT_RATIO_RESOLUTIONS[call.aspect_ratio]
-    # CFG / steps は Gemma ではなくモード(base / Turbo)が決める。明示リクエストがあれば優先。
-    mode_steps, mode_cfg = settings.image_steps_cfg()
+    # turbo と生成パラメータ(cfg/steps)は必ず整合させる。明示 turbo を最優先し、未指定でも
+    # cfg/steps を手動上書きしたら base 扱いにする（CFG≈1 蒸留 LoRA を高 CFG で回すと破綻するため）。
+    if req.turbo is not None:
+        turbo = req.turbo
+    elif req.steps is not None or req.cfg is not None:
+        turbo = False
+    else:
+        turbo = settings.turbo_enabled
+    # CFG / steps は Gemma ではなく実効モードが決める。明示リクエストがあれば優先。
+    mode_steps, mode_cfg = settings.image_steps_cfg(turbo=turbo)
     width = req.width if req.width is not None else preset_width
     height = req.height if req.height is not None else preset_height
     steps = req.steps if req.steps is not None else mode_steps
@@ -105,7 +113,7 @@ async def generate(req: GenerateRequest, request: Request) -> GenerateResponse:
                 steps=steps,
                 cfg=cfg,
                 seed=seed,
-                turbo=settings.turbo_enabled,
+                turbo=turbo,
             )
             image_ms = (time.perf_counter_ns() - image_start) // 1_000_000
     except HTTPException:
