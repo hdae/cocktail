@@ -226,8 +226,6 @@ export function ImageViewer({
               <dd>
                 {image.aspect_ratio} ({image.width}×{image.height})
               </dd>
-              <dt className="text-neutral-500">cfg</dt>
-              <dd>{image.cfg_preset}</dd>
               <dt className="text-neutral-500">created</dt>
               <dd className="font-mono text-[11px]">{image.created_at}</dd>
               <dt className="text-neutral-500">conversation</dt>

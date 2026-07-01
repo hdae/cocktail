@@ -27,7 +27,6 @@ from cocktail_server.schemas.events import (
 )
 from cocktail_server.schemas.generate import (
     ASPECT_RATIO_RESOLUTIONS,
-    CFG_PRESET_VALUES,
     GenerateImageCall,
     LlmTurnSpec,
 )
@@ -210,7 +209,6 @@ class ChatOrchestrator:
             prompt=tool_call.positive.strip(),
             seed=resolved_seed,
             aspect_ratio=tool_call.aspect_ratio,
-            cfg_preset=tool_call.cfg_preset,
             width=result["params"]["width"],
             height=result["params"]["height"],
         )
@@ -243,6 +241,16 @@ class ChatOrchestrator:
         await self._store.append(conversation_id, msg)
         return msg
 
+    def _resolve_gen_params(self, call: GenerateImageCall) -> tuple[int, int, int, float]:
+        """aspect から解像度を、現在のモードから (steps, cfg) を一意に決める。
+
+        表示用 `_build_tool_args` と実生成 `_run_generate_image_tool` が同じ値を出すよう、
+        両者はこの 1 経路を共有する（別々に計算すると静かに食い違い得る）。
+        """
+        width, height = ASPECT_RATIO_RESOLUTIONS[call.aspect_ratio]
+        steps, cfg = self._settings.image_steps_cfg()
+        return width, height, steps, cfg
+
     def _build_tool_args(
         self,
         call: GenerateImageCall,
@@ -250,17 +258,16 @@ class ChatOrchestrator:
         *,
         seed: int,
     ) -> dict[str, Any]:
-        width, height = ASPECT_RATIO_RESOLUTIONS[call.aspect_ratio]
+        width, height, steps, cfg = self._resolve_gen_params(call)
         args: dict[str, Any] = {
             "positive": call.positive,
             "negative": call.negative,
             "aspect_ratio": call.aspect_ratio,
-            "cfg_preset": call.cfg_preset,
             "seed_action": call.seed_action,
             "width": width,
             "height": height,
-            "cfg": CFG_PRESET_VALUES[call.cfg_preset],
-            "steps": self._settings.default_steps,
+            "cfg": cfg,
+            "steps": steps,
             "seed": seed,
         }
         if reference_images:
@@ -270,9 +277,7 @@ class ChatOrchestrator:
     async def _run_generate_image_tool(
         self, call: GenerateImageCall, *, seed: int
     ) -> dict[str, Any]:
-        width, height = ASPECT_RATIO_RESOLUTIONS[call.aspect_ratio]
-        cfg = CFG_PRESET_VALUES[call.cfg_preset]
-        steps = self._settings.default_steps
+        width, height, steps, cfg = self._resolve_gen_params(call)
 
         start_ns = time.perf_counter_ns()
 
@@ -304,7 +309,6 @@ class ChatOrchestrator:
             "prompt": call.positive,
             "negative_prompt": call.negative,
             "aspect_ratio": call.aspect_ratio,
-            "cfg_preset": call.cfg_preset,
             "rationale": call.rationale,
             "params": {
                 "width": width,

@@ -58,14 +58,11 @@ def test_system_prompt_describes_aspect_ratio_presets() -> None:
     assert "1024" in p
 
 
-def test_system_prompt_describes_cfg_presets() -> None:
+def test_system_prompt_does_not_expose_cfg_to_gemma() -> None:
+    # CFG / steps は技術ノブなのでモード(base/Turbo)で一意に決め、Gemma には振らせない。
     p = build_system_prompt()
-    for label in ("soft", "standard", "crisp"):
-        assert label in p
-    # cfg の代表値
-    assert "3.5" in p
-    assert "4.0" in p
-    assert "4.5" in p
+    assert "cfg_preset" not in p
+    assert "CFG PRESET" not in p
 
 
 def test_system_prompt_describes_seed_semantics() -> None:

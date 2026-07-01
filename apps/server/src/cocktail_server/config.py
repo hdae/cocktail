@@ -47,6 +47,17 @@ class Settings(BaseSettings):
     # Civitai の gated モデル用トークン。
     civitai_token: str | None = None
 
+    # Turbo LoRA(step & CFG 蒸留)。空文字なら無効(base 品質)。値があると有効になり、
+    # cold load 時に DiT へ PEFT アダプタとして注入し、生成時は steps/cfg を Turbo 値に切替える。
+    # 形式は image_model_id と同じ: Civitai AIR(urn:air:...) / HF リポ / ローカル .safetensors。
+    #   例(Anima Turbo LoRA): urn:air:anima:lora:civitai:2560840@2979642
+    image_turbo_lora: str = ""
+    # Turbo LoRA の適用強度。1.0 が既定、0.7 程度まで下げると多様性が増す(蒸留は維持)。
+    image_turbo_lora_strength: float = Field(default=1.0, ge=0.0, le=2.0)
+    # Turbo 有効時の生成パラメータ。この LoRA は「CFG 1 / 8-12 steps」を推奨する蒸留 LoRA。
+    image_turbo_steps: int = Field(default=10, ge=1, le=100)
+    image_turbo_cfg: float = Field(default=1.0, ge=0.0, le=20.0)
+
     # VRAM 運用モード: 24GB+ のカードでは coresident に自動切替するのが狙い。
     residency_mode: Literal["auto", "swap", "coresident"] = "auto"
     residency_coresident_threshold_gb: float = Field(default=20.0, ge=0.0)
@@ -56,8 +67,24 @@ class Settings(BaseSettings):
 
     default_width: int = Field(default=896, ge=256, le=2048)
     default_height: int = Field(default=1152, ge=256, le=2048)
+    # base(Turbo 無効)時の生成パラメータ。CFG は Gemma に選ばせず、モードで一意に決める。
     default_steps: int = Field(default=32, ge=1, le=100)
     default_cfg: float = Field(default=4.0, ge=0.0, le=20.0)
+
+    @property
+    def turbo_enabled(self) -> bool:
+        """Turbo LoRA が構成されているか。空文字なら base 品質で動く。"""
+        return bool(self.image_turbo_lora)
+
+    def image_steps_cfg(self) -> tuple[int, float]:
+        """現在のモードから (steps, cfg) を決める。
+
+        CFG と steps は技術的なノブなので Gemma には振らせず、base / Turbo の
+        モードだけで一意に定める。Turbo は CFG≈1 の step&CFG 蒸留。
+        """
+        if self.turbo_enabled:
+            return self.image_turbo_steps, self.image_turbo_cfg
+        return self.default_steps, self.default_cfg
 
     def ensure_dirs(self) -> None:
         self.hf_home.mkdir(parents=True, exist_ok=True)

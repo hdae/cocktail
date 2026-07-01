@@ -49,7 +49,6 @@ async def test_get_conversation_returns_detail_with_messages_and_images(
             prompt="tag1, tag2",
             seed=42,
             aspect_ratio="portrait",
-            cfg_preset="standard",
             width=896,
             height=1152,
         ),

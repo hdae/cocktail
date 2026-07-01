@@ -39,7 +39,6 @@ def _ref(
         prompt="score_7, masterpiece, safe, 1girl",
         seed=seed,
         aspect_ratio="portrait",
-        cfg_preset="standard",
         width=896,
         height=1152,
     )

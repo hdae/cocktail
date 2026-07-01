@@ -11,7 +11,6 @@ from PIL.Image import Image
 
 from cocktail_server.schemas.generate import (
     ASPECT_RATIO_RESOLUTIONS,
-    CFG_PRESET_VALUES,
     GenerateParams,
     GenerateRequest,
     GenerateResponse,
@@ -83,10 +82,12 @@ async def generate(req: GenerateRequest, request: Request) -> GenerateResponse:
     call = spec.tool_calls[0]
 
     preset_width, preset_height = ASPECT_RATIO_RESOLUTIONS[call.aspect_ratio]
+    # CFG / steps は Gemma ではなくモード(base / Turbo)が決める。明示リクエストがあれば優先。
+    mode_steps, mode_cfg = settings.image_steps_cfg()
     width = req.width if req.width is not None else preset_width
     height = req.height if req.height is not None else preset_height
-    steps = req.steps if req.steps is not None else settings.default_steps
-    cfg = req.cfg if req.cfg is not None else CFG_PRESET_VALUES[call.cfg_preset]
+    steps = req.steps if req.steps is not None else mode_steps
+    cfg = req.cfg if req.cfg is not None else mode_cfg
     # `/generate` は会話を持たないので last_image_seed は常に None
     # （`seed_action="keep"` を指定されたら内部で新規採番に縮退する）
     seed = resolve_seed(req_seed=req.seed, action=call.seed_action, last_image_seed=None)

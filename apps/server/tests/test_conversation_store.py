@@ -33,7 +33,6 @@ def _ref(
         prompt="tag1, tag2, tag3",
         seed=seed,
         aspect_ratio="portrait",
-        cfg_preset="standard",
         width=896,
         height=1152,
     )

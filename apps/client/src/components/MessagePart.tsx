@@ -88,7 +88,8 @@ function ToolCallDetails({ args }: { args: Record<string, unknown> }): JSX.Eleme
     ["positive", stringify(args.positive)],
     ["negative", stringify(args.negative)],
     ["aspect_ratio", stringify(args.aspect_ratio)],
-    ["cfg_preset", stringify(args.cfg_preset)],
+    ["steps", stringify(args.steps)],
+    ["cfg", stringify(args.cfg)],
     ["seed", stringify(args.seed)],
     ["resolution", formatResolution(args.width, args.height)],
   ].filter(([, v]) => v !== null) as [string, string][];

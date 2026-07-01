@@ -166,7 +166,6 @@ def _reconstruct_assistant_spec(msg: Message) -> str:
                 "positive": args.get("positive", ""),
                 "negative": args.get("negative", NEGATIVE_DEFAULT),
                 "aspect_ratio": args.get("aspect_ratio", "portrait"),
-                "cfg_preset": args.get("cfg_preset", "standard"),
                 "seed_action": args.get("seed_action", "new"),
                 "rationale": "",
             }

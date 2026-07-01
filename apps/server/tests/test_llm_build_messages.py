@@ -39,7 +39,6 @@ def _assistant_with_image(image_id: str, mid: str = "a1") -> Message:
                     "positive": "score_7, safe, 1girl",
                     "negative": "worst quality",
                     "aspect_ratio": "portrait",
-                    "cfg_preset": "standard",
                     "seed_action": "new",
                     "width": 896,
                     "height": 1152,

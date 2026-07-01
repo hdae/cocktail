@@ -5,19 +5,12 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 AspectRatio = Literal["portrait", "landscape", "square"]
-CfgPreset = Literal["soft", "standard", "crisp"]
 SeedAction = Literal["new", "keep"]
 
 ASPECT_RATIO_RESOLUTIONS: dict[AspectRatio, tuple[int, int]] = {
     "portrait": (896, 1152),
     "landscape": (1152, 896),
     "square": (1024, 1024),
-}
-
-CFG_PRESET_VALUES: dict[CfgPreset, float] = {
-    "soft": 3.5,
-    "standard": 4.0,
-    "crisp": 4.5,
 }
 
 
@@ -34,7 +27,8 @@ class PromptSpec(BaseModel):
 class GenerateImageCall(BaseModel):
     """Gemma が選ぶ `generate_image` ツール呼び出し。
 
-    `aspect_ratio` と `cfg_preset` はプリセット指定。seed 値は Gemma に扱わせず、
+    `aspect_ratio` はプリセット指定。CFG / steps は技術ノブなのでサーバがモード
+    (base / Turbo)で決め、Gemma には振らせない。seed 値も Gemma に扱わせず、
     `seed_action` ("new"=採番し直す / "keep"=前回と同じ seed を維持) の意図だけ
     選ばせる。実際の seed 値はサーバが `seed_resolver.resolve_seed` で決める。
     """
@@ -45,7 +39,6 @@ class GenerateImageCall(BaseModel):
     positive: str = Field(min_length=1)
     negative: str = Field(min_length=1)
     aspect_ratio: AspectRatio = "portrait"
-    cfg_preset: CfgPreset = "standard"
     seed_action: SeedAction = "new"
     rationale: str = ""
 

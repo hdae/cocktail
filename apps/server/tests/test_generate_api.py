@@ -29,7 +29,6 @@ class FakeLlm:
                     ),
                     negative=NEGATIVE_DEFAULT,
                     aspect_ratio="portrait",
-                    cfg_preset="standard",
                     seed_action="new",
                     rationale="fake rationale",
                 )

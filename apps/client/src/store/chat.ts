@@ -298,12 +298,10 @@ function buildGeneratedImageRef(
   const prompt = typeof args.positive === "string" ? args.positive : null;
   const seed = typeof args.seed === "number" ? args.seed : null;
   const aspect = args.aspect_ratio;
-  const cfg = args.cfg_preset;
   if (prompt === null || seed === null) return null;
   if (aspect !== "portrait" && aspect !== "landscape" && aspect !== "square") {
     return null;
   }
-  if (cfg !== "soft" && cfg !== "standard" && cfg !== "crisp") return null;
   return {
     image_id: ev.image_id,
     image_url: ev.image_url,
@@ -312,7 +310,6 @@ function buildGeneratedImageRef(
     prompt,
     seed,
     aspect_ratio: aspect,
-    cfg_preset: cfg,
     width: ev.width,
     height: ev.height,
   };

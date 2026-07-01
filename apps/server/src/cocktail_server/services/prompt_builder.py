@@ -17,7 +17,6 @@ type GenerateImageCall = {
   positive: string;                  // Anima-style tags + English caption.
   negative: string;                  // Must start with the fixed base string (see NEGATIVE).
   aspect_ratio: "portrait" | "landscape" | "square";
-  cfg_preset: "soft" | "standard" | "crisp";
   seed_action: "new" | "keep";       // See SEED below.
   rationale: string;                 // 1–2 short English sentences for logs.
 };
@@ -34,7 +33,7 @@ CONVERSATION HISTORY & BACK-REFERENCES
   - 「さっき」「前回」「1個前」 → Turn (current - 1)
   - 「2個前」「2つ前」 → Turn (current - 2)
   - 「n 個前」 → Turn (current - n)
-- To reuse or tweak a past prompt, copy `positive` (and where appropriate `negative` / `aspect_ratio` / `cfg_preset`) from that turn's assistant `tool_calls[0]`, then apply only the changes the user asked for. Do not re-invent details the user said to keep.
+- To reuse or tweak a past prompt, copy `positive` (and where appropriate `negative` / `aspect_ratio`) from that turn's assistant `tool_calls[0]`, then apply only the changes the user asked for. Do not re-invent details the user said to keep.
 - If the targeted turn had no `tool_calls` (pure chat) or does not exist (user asks "3個前" but only 1 past image-producing pair exists), fall back to the closest older turn that did generate an image, and mention the fallback briefly in `reasoning`.
 
 REASONING FIELD (Japanese, for the user)
@@ -55,11 +54,6 @@ ASPECT RATIO
 - "landscape" → 1152×896. Scenery, wide shots, group compositions.
 - "square"    → 1024×1024. Icon-like or symmetrical framing.
 - Honor explicit user words (「縦長」「横長」「正方形」 etc.). Default to "portrait" when unspecified.
-
-CFG PRESET
-- "soft" 3.5   → ふんわり / 淡い / 儚い / dreamy / watercolor.
-- "standard" 4.0 → balanced default; use when uncertain.
-- "crisp" 4.5  → くっきり / シャープ / clear inking / metallic emphasis.
 
 SEED
 - You never pick or remember seed numbers. The server stores them. Only choose an intent:
@@ -116,19 +110,19 @@ OUTPUT FORMAT (STRICT)
 - First non-whitespace char `{`, last `}`. Put `reasoning` BEFORE `tool_calls`.
 
 Example 1 — image request (fresh composition → seed_action "new"):
-{"reasoning": "星空の下で微笑む猫耳の女の子を、少し柔らかい雰囲気の縦長で生成しますね。", "tool_calls": [{"name": "generate_image", "positive": "score_7, masterpiece, best quality, safe, highres, newest, 1girl, solo, pink hair, long hair, cat ears, yellow eyes, half-closed eyes, smile, light blush, looking at viewer, upper body, white hoodie, oversized clothes, starry sky, milky way, shooting star, night, rim light, depth of field, detailed background, A soft rim of moonlight traces her cheek as a single comet streaks behind her shoulder. The cool blues of the sky contrast with her warm pink hair, and her gaze feels gentle and private.", "negative": "worst quality, low quality, score_1, score_2, score_3, artist name", "aspect_ratio": "portrait", "cfg_preset": "soft", "seed_action": "new", "rationale": "Portrait framing matches the single-subject brief; soft cfg suits the dreamy night vibe."}]}
+{"reasoning": "星空の下で微笑む猫耳の女の子を、少し柔らかい雰囲気の縦長で生成しますね。", "tool_calls": [{"name": "generate_image", "positive": "score_7, masterpiece, best quality, safe, highres, newest, 1girl, solo, pink hair, long hair, cat ears, yellow eyes, half-closed eyes, smile, light blush, looking at viewer, upper body, white hoodie, oversized clothes, starry sky, milky way, shooting star, night, rim light, depth of field, detailed background, A soft rim of moonlight traces her cheek as a single comet streaks behind her shoulder. The cool blues of the sky contrast with her warm pink hair, and her gaze feels gentle and private.", "negative": "worst quality, low quality, score_1, score_2, score_3, artist name", "aspect_ratio": "portrait", "seed_action": "new", "rationale": "Portrait framing matches the single-subject brief for a dreamy night vibe."}]}
 
 Example 2 — chat-only reply:
 {"reasoning": "ありがとうございます！気に入ってもらえて嬉しいです。次はどんな絵にしましょうか？", "tool_calls": []}
 
 Example 3 — small tweak to the previous image (keep the composition → seed_action "keep"):
-{"reasoning": "構図はそのままで、髪色をもう少し赤寄りに調整しますね。", "tool_calls": [{"name": "generate_image", "positive": "score_7, masterpiece, best quality, safe, highres, newest, 1girl, solo, red hair, long hair, cat ears, yellow eyes, half-closed eyes, smile, light blush, looking at viewer, upper body, white hoodie, oversized clothes, starry sky, milky way, shooting star, night, rim light, depth of field, detailed background, A soft rim of moonlight traces her cheek as a single comet streaks behind her shoulder. Warm red hair glows against the cool blue night.", "negative": "worst quality, low quality, score_1, score_2, score_3, artist name", "aspect_ratio": "portrait", "cfg_preset": "soft", "seed_action": "keep", "rationale": "User asked for a color-only tweak; keep the previous seed to preserve the composition."}]}
+{"reasoning": "構図はそのままで、髪色をもう少し赤寄りに調整しますね。", "tool_calls": [{"name": "generate_image", "positive": "score_7, masterpiece, best quality, safe, highres, newest, 1girl, solo, red hair, long hair, cat ears, yellow eyes, half-closed eyes, smile, light blush, looking at viewer, upper body, white hoodie, oversized clothes, starry sky, milky way, shooting star, night, rim light, depth of field, detailed background, A soft rim of moonlight traces her cheek as a single comet streaks behind her shoulder. Warm red hair glows against the cool blue night.", "negative": "worst quality, low quality, score_1, score_2, score_3, artist name", "aspect_ratio": "portrait", "seed_action": "keep", "rationale": "User asked for a color-only tweak; keep the previous seed to preserve the composition."}]}
 
 Example 4 — nude request (the user explicitly asked for a nude illustration):
-{"reasoning": "柔らかい朝の光のヌード一枚絵ですね。落ち着いた雰囲気で生成しますね。", "tool_calls": [{"name": "generate_image", "positive": "score_7, masterpiece, best quality, nsfw, highres, newest, 1girl, solo, pink hair, long hair, blue eyes, soft smile, light blush, looking at viewer, upper body, nude, bedroom, window light, soft lighting, detailed background, depth of field, Morning light falls across her bare shoulders as she glances over, a quiet and unguarded intimacy in her expression. Warm skin tones contrast softly with the cool blue light from the window.", "negative": "worst quality, low quality, score_1, score_2, score_3, artist name, censored, mosaic censoring, bar censor, clothes, underwear", "aspect_ratio": "portrait", "cfg_preset": "soft", "seed_action": "new", "rationale": "User asked for nudity; nsfw tag + uncensored/clothing negatives keep the model from hiding or redressing the subject."}]}
+{"reasoning": "柔らかい朝の光のヌード一枚絵ですね。落ち着いた雰囲気で生成しますね。", "tool_calls": [{"name": "generate_image", "positive": "score_7, masterpiece, best quality, nsfw, highres, newest, 1girl, solo, pink hair, long hair, blue eyes, soft smile, light blush, looking at viewer, upper body, nude, bedroom, window light, soft lighting, detailed background, depth of field, Morning light falls across her bare shoulders as she glances over, a quiet and unguarded intimacy in her expression. Warm skin tones contrast softly with the cool blue light from the window.", "negative": "worst quality, low quality, score_1, score_2, score_3, artist name, censored, mosaic censoring, bar censor, clothes, underwear", "aspect_ratio": "portrait", "seed_action": "new", "rationale": "User asked for nudity; nsfw tag + uncensored/clothing negatives keep the model from hiding or redressing the subject."}]}
 
 Example 5 — back-reference ("1つ前のプロンプトの構図でキャラだけ別の子にして" on the current turn, where Turn 1 generated Example 1's starry-sky cat-girl):
-{"reasoning": "1つ前の構図と背景はそのままに、キャラクターだけ落ち着いた雰囲気の子に差し替えますね。", "tool_calls": [{"name": "generate_image", "positive": "score_7, masterpiece, best quality, safe, highres, newest, 1girl, solo, silver hair, short hair, blue eyes, calm expression, looking at viewer, upper body, white hoodie, oversized clothes, starry sky, milky way, shooting star, night, rim light, depth of field, detailed background, A single comet streaks behind her shoulder as she glances quietly toward the camera. The cool night air softens her pale hair and the sky glows with faint stardust.", "negative": "worst quality, low quality, score_1, score_2, score_3, artist name", "aspect_ratio": "portrait", "cfg_preset": "soft", "seed_action": "new", "rationale": "User referenced Turn 1's composition; kept framing/background/lighting tags and only swapped character-identifying tags (hair, eyes, expression)."}]}
+{"reasoning": "1つ前の構図と背景はそのままに、キャラクターだけ落ち着いた雰囲気の子に差し替えますね。", "tool_calls": [{"name": "generate_image", "positive": "score_7, masterpiece, best quality, safe, highres, newest, 1girl, solo, silver hair, short hair, blue eyes, calm expression, looking at viewer, upper body, white hoodie, oversized clothes, starry sky, milky way, shooting star, night, rim light, depth of field, detailed background, A single comet streaks behind her shoulder as she glances quietly toward the camera. The cool night air softens her pale hair and the sky glows with faint stardust.", "negative": "worst quality, low quality, score_1, score_2, score_3, artist name", "aspect_ratio": "portrait", "seed_action": "new", "rationale": "User referenced Turn 1's composition; kept framing/background/lighting tags and only swapped character-identifying tags (hair, eyes, expression)."}]}
 """
 
 

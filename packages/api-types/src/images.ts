@@ -23,7 +23,6 @@ export const GeneratedImageRefSchema = z
     prompt: z.string(),
     seed: z.number().int(),
     aspect_ratio: z.enum(["portrait", "landscape", "square"]),
-    cfg_preset: z.enum(["soft", "standard", "crisp"]),
     width: z.number().int(),
     height: z.number().int(),
   })

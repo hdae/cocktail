@@ -34,7 +34,6 @@ def _make_spec(
                 ),
                 negative=NEGATIVE_DEFAULT,
                 aspect_ratio="portrait",
-                cfg_preset="standard",
                 seed_action="new",
                 rationale="fake rationale",
             )
@@ -180,7 +179,8 @@ def test_subscribe_emits_full_sequence(client: TestClient) -> None:
     tool_start = next(data for name, data in events if name == "tool_call_start")
     assert tool_start["name"] == "generate_image"
     assert tool_start["args"]["aspect_ratio"] == "portrait"
-    assert tool_start["args"]["cfg_preset"] == "standard"
+    assert tool_start["args"]["cfg"] == 4.0
+    assert tool_start["args"]["steps"] == 32
     assert tool_start["args"]["width"] == 896
     assert tool_start["args"]["height"] == 1152
     assert tool_start["args"]["positive"].startswith("score_7")
@@ -395,7 +395,6 @@ def test_chat_seed_action_keep_reuses_previous_seed(
         positive="score_7, masterpiece, best quality, safe, newest, 1girl, first",
         negative=NEGATIVE_DEFAULT,
         aspect_ratio="portrait",
-        cfg_preset="standard",
         seed_action="new",
         rationale="first",
     )
@@ -404,7 +403,6 @@ def test_chat_seed_action_keep_reuses_previous_seed(
         positive="score_7, masterpiece, best quality, safe, newest, 1girl, tweak",
         negative=NEGATIVE_DEFAULT,
         aspect_ratio="portrait",
-        cfg_preset="standard",
         seed_action="keep",
         rationale="tweak",
     )
@@ -461,7 +459,6 @@ def test_chat_generated_image_appears_in_list_endpoint(
     assert image_ready["image_id"] in image_ids
     found = next(img for img in listing["images"] if img["image_id"] == image_ready["image_id"])
     assert found["aspect_ratio"] == "portrait"
-    assert found["cfg_preset"] == "standard"
     assert found["width"] == 896
     assert found["height"] == 1152
     assert found["prompt"].startswith("score_7")
@@ -482,7 +479,6 @@ def test_chat_landscape_aspect_ratio_resolves_to_correct_size(
         positive="score_7, masterpiece, best quality, safe, newest, 1girl, landscape",
         negative=NEGATIVE_DEFAULT,
         aspect_ratio="landscape",
-        cfg_preset="crisp",
         seed_action="new",
         rationale="wide shot",
     )
@@ -496,8 +492,8 @@ def test_chat_landscape_aspect_ratio_resolves_to_correct_size(
     assert tool_start["args"]["aspect_ratio"] == "landscape"
     assert tool_start["args"]["width"] == 1152
     assert tool_start["args"]["height"] == 896
-    assert tool_start["args"]["cfg_preset"] == "crisp"
-    assert tool_start["args"]["cfg"] == 4.5
+    assert tool_start["args"]["cfg"] == 4.0
+    assert tool_start["args"]["steps"] == 32
 
 
 def test_retention_gc_removes_turn_after_timeout(

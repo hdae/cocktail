@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from cocktail_server.schemas.generate import AspectRatio, CfgPreset
+from cocktail_server.schemas.generate import AspectRatio
 
 
 class ImageUploadResponse(BaseModel):
@@ -31,7 +31,6 @@ class GeneratedImageRef(BaseModel):
     prompt: str
     seed: int
     aspect_ratio: AspectRatio
-    cfg_preset: CfgPreset
     width: int
     height: int
 
