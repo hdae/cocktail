@@ -57,9 +57,13 @@ class FakeLlama:
 
 
 class FakeTags:
-    def __init__(self, results: list[TagSuggestion]) -> None:
+    def __init__(
+        self, results: list[TagSuggestion], hints: list[TagSuggestion] | None = None
+    ) -> None:
         self._results = results
+        self._hints = hints or []
         self.queries: list[tuple[str, int, int | None]] = []
+        self.match_calls: list[tuple[str, int]] = []
 
     def search(
         self, query: str, limit: int = 15, category: int | None = None
@@ -67,9 +71,24 @@ class FakeTags:
         self.queries.append((query, limit, category))
         return self._results
 
+    def match_in_text(self, text: str, limit: int = 8) -> list[TagSuggestion]:
+        self.match_calls.append((text, limit))
+        return self._hints
 
-def _service(hops: list[str], tag_results: list[TagSuggestion]) -> LlmService:
-    svc = LlmService("dummy.gguf", hf_home=Path("/x"), tags=FakeTags(tag_results))
+
+def _service(
+    hops: list[str],
+    tag_results: list[TagSuggestion],
+    *,
+    hints: list[TagSuggestion] | None = None,
+    tag_hints_enabled: bool = True,
+) -> LlmService:
+    svc = LlmService(
+        "dummy.gguf",
+        hf_home=Path("/x"),
+        tags=FakeTags(tag_results, hints=hints),  # type: ignore[arg-type]
+        tag_hints=tag_hints_enabled,
+    )
     svc._llm = FakeLlama(hops)  # type: ignore[assignment]
     return svc
 
@@ -207,6 +226,42 @@ async def test_intermediate_hop_text_streams_and_accumulates() -> None:
     assert "探すね。" in joined
     assert "できたよ。" in joined
     assert result.text == joined.strip()
+
+
+# --- タグ候補注入（事前検索: auto tag lookup）-------------------------------------
+
+
+async def test_tag_hints_injected_into_current_user_message() -> None:
+    # ターン開始時に current ユーザ発話が逆引きされ、候補が最初のホップの user content に
+    # 注入される。注入は turn-local: ユーザ向け result.text には一切漏れない。
+    svc = _service([_GEN_HOP], [], hints=[_ARONA])
+    _deltas, result = await _drive(svc)
+
+    tags = _fake_tags(svc)
+    assert tags.match_calls == [("アロナを描いて", 8)]
+    first_hop = _fake_llm(svc).calls[0]
+    user_msg = next(m for m in first_hop if m.get("role") == "user")
+    assert "auto tag lookup" in user_msg["content"]
+    assert "arona (blue archive) [アロナ]" in user_msg["content"]
+    assert "auto tag lookup" not in result.text
+    assert "arona" not in result.text
+
+
+async def test_tag_hints_absent_when_no_match() -> None:
+    # ヒットが無い発話（雑談等）はヒントブロック自体が付かない（自然なゲート）。
+    svc = _service([_CHAT_HOP], [], hints=[])
+    await _drive(svc)
+    user_msg = next(m for m in _fake_llm(svc).calls[0] if m.get("role") == "user")
+    assert "auto tag lookup" not in user_msg["content"]
+
+
+async def test_tag_hints_disabled_by_kill_switch() -> None:
+    # LLM_TAG_HINTS=false なら逆引き自体を呼ばず、入力は従来と同一。
+    svc = _service([_GEN_HOP], [], hints=[_ARONA], tag_hints_enabled=False)
+    await _drive(svc)
+    assert _fake_tags(svc).match_calls == []
+    user_msg = next(m for m in _fake_llm(svc).calls[0] if m.get("role") == "user")
+    assert "auto tag lookup" not in user_msg["content"]
 
 
 # --- フィードバック形式（テンプレ整合）-------------------------------------------

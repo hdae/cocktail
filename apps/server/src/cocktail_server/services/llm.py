@@ -4,7 +4,7 @@ import asyncio
 import ctypes
 import gc
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -49,6 +49,9 @@ _MAX_TOKENS: Final[int] = 1024
 _MAX_ITERS: Final[int] = 3
 # モデルへ戻す検索候補の件数（n_ctx 予算のため要約する。多すぎると positive を埋没させる）。
 _SEARCH_TOP_N: Final[int] = 8
+# 事前検索(タグ候補注入)で current ターンへ添付する候補の上限。_SEARCH_TOP_N と同じ予算感覚
+# （多すぎる候補はノイズかつ positive を埋没させる）。
+_HINT_TOP_N: Final[int] = 8
 
 
 @dataclass(frozen=True)
@@ -150,12 +153,17 @@ def _reconstruct_assistant_turn(msg: Message) -> str:
     return "\n\n".join(segments) or "(no response)"
 
 
-def _build_chat_messages(history: list[Message]) -> list[dict[str, Any]]:
+def _build_chat_messages(
+    history: list[Message], tag_hints: Sequence[TagSuggestion] = ()
+) -> list[dict[str, Any]]:
     """会話履歴を Gemma の chat_completion 入力に変換する。
 
     先頭に system ロールでペルソナ + タグ規約を置く（埋込 Gemma 4 テンプレは system を
     受け付ける）。各 user に `[Turn N]` ラベルを埋め、末尾 user に `[Turn N / current]`。
     純チャット応答のみだったターンも 1 としてカウントする（user/assistant ペア単位）。
+
+    `tag_hints` は current ターンにのみ添付する（turn-local 注入）: 過去ターンの replay に
+    候補を残すと文脈を恒久的に太らせる上、当時モデルが見た内容とも一致しないため。
     """
     if not history:
         raise ValueError("history must contain at least one message")
@@ -172,12 +180,16 @@ def _build_chat_messages(history: list[Message]) -> list[dict[str, Any]]:
     for i, msg in enumerate(history):
         if msg.role == "user":
             turn_index += 1
+            is_current = i == last_user_pos
             text = _extract_user_text(msg) or "(no text)"
             messages.append(
                 {
                     "role": "user",
                     "content": build_user_message(
-                        text, turn_index=turn_index, is_current=(i == last_user_pos)
+                        text,
+                        turn_index=turn_index,
+                        is_current=is_current,
+                        tag_hints=tag_hints if is_current else (),
                     ),
                 }
             )
@@ -283,6 +295,7 @@ class LlmService:
         kv_cache_type: str = "f16",
         flash_attn: bool = True,
         swa_full: bool = False,
+        tag_hints: bool = True,
         temperature: float = 0.7,
         top_p: float = 0.95,
         top_k: int = 40,
@@ -296,6 +309,7 @@ class LlmService:
         self._kv_cache_type = kv_cache_type
         self._flash_attn = flash_attn
         self._swa_full = swa_full
+        self._tag_hints_enabled = tag_hints
         self._temperature = temperature
         self._top_p = top_p
         self._top_k = top_k
@@ -400,7 +414,8 @@ class LlmService:
         if self._llm is None:
             await asyncio.to_thread(self.load)
 
-        messages = _build_chat_messages(history)
+        tag_hints = self._lookup_tag_hints(history)
+        messages = _build_chat_messages(history, tag_hints)
         streamed_text = ""
         try:
             for hop in range(_MAX_ITERS):
@@ -431,7 +446,7 @@ class LlmService:
             logger.warning("native turn streaming parse failed, retrying: %s", exc)
 
         try:
-            result = await asyncio.to_thread(self._sync_turn, history)
+            result = await asyncio.to_thread(self._sync_turn, history, tag_hints)
         except (ValueError, ValidationError) as exc:
             logger.warning("LLM retry failed (%s); degrading to a chat-only reply", exc)
             fallback = streamed_text or "うまく応答できませんでした。もう一度試してください。"
@@ -440,6 +455,24 @@ class LlmService:
         if streamed_text:
             result = replace(result, text=streamed_text)
         yield LlmTurnComplete(result=result)
+
+    def _lookup_tag_hints(self, history: list[Message]) -> list[TagSuggestion]:
+        """current ユーザ発話をタグ辞書と逆引き照合し、注入する候補を引く（事前検索）。
+
+        ヒットが無ければ空 = ヒントブロック自体を出さず、雑談ターンを汚さない。モデルの
+        自発判断(search_tags)と違い文脈の深さに依存しないため、長文脈で検索規律が衰える
+        問題（ADR 0003 の A/B で確認）への構造対策になる。照合はインメモリのハッシュ照合で
+        サブ ms（イベントループ上で直接呼んでよい）。
+        """
+        if not self._tag_hints_enabled:
+            return []
+        current = next((m for m in reversed(history) if m.role == "user"), None)
+        if current is None:
+            return []
+        hints = self._tags.match_in_text(_extract_user_text(current), limit=_HINT_TOP_N)
+        if hints:
+            logger.info("tag hints: %s", "; ".join(t.tag for t in hints))
+        return hints
 
     def _hop_kwargs(self, messages: list[dict[str, Any]], *, temperature: float) -> dict[str, Any]:
         return {
@@ -545,11 +578,14 @@ class LlmService:
             logger.info("Gemma thought (hidden): %s", parsed.thought)
         yield _HopResult(parsed=parsed)
 
-    def _sync_turn(self, history: list[Message]) -> LlmTurnResult:
+    def _sync_turn(
+        self, history: list[Message], tag_hints: Sequence[TagSuggestion] = ()
+    ) -> LlmTurnResult:
         llm = self._llm
         assert llm is not None
 
-        messages = _build_chat_messages(history)
+        # リトライ経路もストリーム経路と同じヒントを見せる（入力の乖離を作らない）。
+        messages = _build_chat_messages(history, tag_hints)
         out = llm.create_chat_completion(
             **self._hop_kwargs(messages, temperature=self._temperature)
         )

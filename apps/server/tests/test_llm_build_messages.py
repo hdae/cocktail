@@ -10,6 +10,7 @@ from cocktail_server.schemas.messages import (
     ToolCallPart,
     ToolResultPart,
 )
+from cocktail_server.schemas.tags import TagSuggestion
 from cocktail_server.services.llm import _build_chat_messages
 from cocktail_server.services.prompt_builder import build_user_message
 
@@ -119,6 +120,28 @@ def test_pure_chat_turn_still_counts_as_a_turn() -> None:
         "最初のお願い", turn_index=1, is_current=False
     )
     assert messages[3]["content"] == build_user_message("次のお願い", turn_index=2, is_current=True)
+
+
+def test_tag_hints_attach_only_to_current_user_turn() -> None:
+    # タグ候補注入は turn-local: current の user にだけ付き、過去ターンの replay は不変。
+    hints = [
+        TagSuggestion(
+            tag="texas_(arknights)", category=4, post_count=8125, ja="テキサス", matched="テキサス"
+        )
+    ]
+    image_id = "11111111-1111-1111-1111-111111111111"
+    history = [
+        _user("テキサスを1枚", mid="u1"),
+        _assistant_with_image(image_id, mid="a1"),
+        _user("私服にして", mid="u2"),
+    ]
+    messages = _build_chat_messages(history, hints)
+    assert "auto tag lookup" not in messages[1]["content"]
+    assert "auto tag lookup" in messages[3]["content"]
+    assert "texas (arknights)" in messages[3]["content"]
+    assert messages[3]["content"] == build_user_message(
+        "私服にして", turn_index=2, is_current=True, tag_hints=hints
+    )
 
 
 def test_empty_history_raises() -> None:

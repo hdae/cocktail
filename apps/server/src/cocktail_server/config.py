@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     # フルサイズの利点は深い履歴分岐でのキャッシュ再利用だけで、その場合も llama.cpp が
     # 全文再評価に正しくフォールバックする（品質差なし・レイテンシのみ）。
     llm_swa_full: bool = False
+    # ターン開始時に current ユーザ発話をタグ辞書と逆引き照合し、正規タグ候補を自動注入する
+    # 事前検索(Stage 1: 辞書照合)。モデルが search_tags を呼ばず非正規タグで生成する/深い
+    # 文脈で検索規律が衰える問題への構造対策（docs/decisions/0005-tag-hints-presearch.md）。
+    # A/B・切り分け用の kill-switch。
+    llm_tag_hints: bool = True
 
     # Danbooru タグ検索(search_tags ツール)の索引元 CSV。hdae/danbooru-tagcomplete-extra の
     # prebuilt CSV(日本語エイリアス入り)。`tags_csv` が無いとき `tags_auto_download` が真なら

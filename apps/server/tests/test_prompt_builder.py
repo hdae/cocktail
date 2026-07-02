@@ -1,3 +1,4 @@
+from cocktail_server.schemas.tags import TagSuggestion
 from cocktail_server.services.prompt_builder import (
     GENERATE_IMAGE_TOOL,
     NEGATIVE_DEFAULT,
@@ -179,3 +180,39 @@ def test_user_message_past_turn_has_no_current_marker() -> None:
     msg = build_user_message("昔のお願い", turn_index=1, is_current=False)
     assert "[Turn 1]" in msg
     assert "/ current" not in msg
+
+
+# --- build_user_message: タグ候補注入（auto tag lookup）---------------------------
+
+
+def test_user_message_renders_tag_hints_normalized() -> None:
+    # 候補はスペース区切りへ正規化し、当たった読みを [] で添える。生成条件付きの
+    # 指示文（generate_image を呼ぶときだけ使う）も含む。
+    hints = [
+        TagSuggestion(
+            tag="texas_(arknights)", category=4, post_count=8125, ja="テキサス", matched="テキサス"
+        ),
+        TagSuggestion(tag="casual", category=0, post_count=62832, ja="私服", matched="私服"),
+    ]
+    msg = build_user_message("テキサスを私服で1枚", turn_index=1, is_current=True, tag_hints=hints)
+    assert "auto tag lookup" in msg
+    assert "texas (arknights) [テキサス]" in msg
+    assert "casual [私服]" in msg
+    assert "texas_(arknights)" not in msg
+    assert "generate_image" in msg
+
+
+def test_user_message_hint_reading_falls_back_to_ja_and_omits_duplicates() -> None:
+    # matched 無し(タグ名直接ヒット)は ja を読みに使い、読みが表示形と同じなら [] を出さない。
+    hints = [
+        TagSuggestion(tag="fireworks", category=0, post_count=18014, ja="花火", matched=None),
+        TagSuggestion(tag="solo", category=0, post_count=6614995, ja=None, matched="solo"),
+    ]
+    msg = build_user_message("お願い", turn_index=1, is_current=True, tag_hints=hints)
+    assert "fireworks [花火]" in msg
+    assert "solo" in msg
+    assert "solo [" not in msg
+
+
+def test_user_message_without_hints_has_no_lookup_block() -> None:
+    assert "auto tag lookup" not in build_user_message("こんにちは", turn_index=1, is_current=True)

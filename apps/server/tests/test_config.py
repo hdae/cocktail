@@ -62,3 +62,9 @@ def test_context_length_defaults_fp16_kv_with_compact_swa() -> None:
     assert s.llm_kv_cache_type == "f16"
     assert s.llm_flash_attn is True
     assert s.llm_swa_full is False
+
+
+def test_tag_hints_default_on() -> None:
+    # 事前検索(タグ候補注入)は既定 ON。OFF は A/B・切り分け用の kill-switch
+    # （docs/decisions/0005-tag-hints-presearch.md）。
+    assert Settings().llm_tag_hints is True

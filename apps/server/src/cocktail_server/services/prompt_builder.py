@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
+
+from cocktail_server.schemas.tags import TagSuggestion
 
 NEGATIVE_DEFAULT = "worst quality, low quality, score_1, score_2, score_3, artist name"
 
@@ -56,6 +59,7 @@ SEED — "new" (default, fresh composition) / "keep" (reuse the previous image's
 キャラクター名・シリーズ名・特定の衣装/小物/構図の呼び名など、正規の Danbooru タグの綴りに確信が
 持てない要素が依頼に含まれるときは、憶測でタグを書かず、generate_image の前に必ず search_tags で
 調べる。返った候補(tag と、当たった読み matched/ja)から適切なものを選び、その tag を positive に採用する。
+- ユーザーメッセージの末尾に (auto tag lookup: ...) として、発話中の語に対応する正規タグ候補が自動添付されることがある。付いていれば内容に合う候補をそのまま positive に使い、search_tags は候補に無い・足りない要素だけ調べる。合わない候補は無視してよい。
 - 自信のある一般タグ（「1girl」「smile」「looking at viewer」「pink hair」など）は検索不要。直接書く。検索は不確かな固有名詞・特殊タグに限り、自信があるものを無駄に調べない。
 - 検索クエリは短い1語で。キャラ名や読みだけを渡す（「ホシノ」であって「ホシノ (Blue Archive)」ではない）。括弧の補足は付けない。シリーズ名を知りたければ別に検索する。
 - 検索は必要な分だけ（多くて数回）。返った tag を選んだら、迷わず generate_image に進んで実際に画像を出す。「調べてから作るね」と一言添えるのは良いが、search_tags を実際に呼ばずに / 画像を出さずに途中で止まってはいけない。
@@ -184,11 +188,37 @@ def compose_negative(extra: str) -> str:
     return f"{NEGATIVE_DEFAULT}, {extra}" if extra else NEGATIVE_DEFAULT
 
 
-def build_user_message(instruction_ja: str, *, turn_index: int, is_current: bool) -> str:
+def _hint_entry(hint: TagSuggestion) -> str:
+    """タグ候補 1 件を `tag [読み]` に整形する（読みは当たったキー、無ければ ja）。"""
+    disp = display_tag(hint.tag)
+    reading = hint.matched or hint.ja
+    return f"{disp} [{reading}]" if reading and reading != disp else disp
+
+
+def build_user_message(
+    instruction_ja: str,
+    *,
+    turn_index: int,
+    is_current: bool,
+    tag_hints: Sequence[TagSuggestion] = (),
+) -> str:
     """Gemma に渡す 1 ユーザーターンの本文を組む。
 
     各ターンに `[Turn N]` を付け、今回応答すべき末尾ターンは `[Turn N / current]` と明示。
     Gemma はこのラベルで「n 個前」を current-n として解決する。
+
+    `tag_hints` があれば末尾に (auto tag lookup: ...) ブロックを付ける（事前検索の
+    候補注入）。呼び出し側は current ターンにだけ渡す — 注入は turn-local で、永続履歴の
+    replay には現れない（docs/decisions/0005-tag-hints-presearch.md）。生成を誘発しない
+    よう「generate_image を呼ぶときだけ使う」条件を文面に含める。
     """
     marker = f"[Turn {turn_index} / current]" if is_current else f"[Turn {turn_index}]"
-    return f"{marker}\n{instruction_ja}"
+    body = f"{marker}\n{instruction_ja}"
+    if tag_hints:
+        entries = "; ".join(_hint_entry(h) for h in tag_hints)
+        body += (
+            "\n\n(auto tag lookup — この発話に含まれる語の正規 Danbooru タグ候補。"
+            "generate_image を呼ぶときだけ、内容に合うものを positive にそのまま使い、"
+            f"合わないものは無視する: {entries})"
+        )
+    return body

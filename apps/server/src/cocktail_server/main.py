@@ -168,6 +168,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         kv_cache_type=settings.llm_kv_cache_type,
         flash_attn=settings.llm_flash_attn,
         swa_full=settings.llm_swa_full,
+        tag_hints=settings.llm_tag_hints,
         temperature=settings.llm_temperature,
         top_p=settings.llm_top_p,
         top_k=settings.llm_top_k,
