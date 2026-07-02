@@ -208,6 +208,9 @@ async def test_feedback_uses_structured_tool_calls_and_role_tool() -> None:
 
     assistant_calls = [m for m in second_hop_messages if m.get("tool_calls")]
     assert len(assistant_calls) == 1
+    # content は空が MUST: テンプレは content をツール応答の後に描画し、非空だと <turn|> で
+    # モデルターンを閉じてしまい、継続ホップの生成開始点が消える（cascade 設計の前提）。
+    assert assistant_calls[0]["content"] == ""
     fn = assistant_calls[0]["tool_calls"][0]
     assert fn["function"]["name"] == "search_tags"
     # category は既知値のみ int でそのまま replay（未知/None は省く）。

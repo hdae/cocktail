@@ -416,7 +416,7 @@ class LlmService:
                     yield LlmTurnComplete(result=_build_result(parsed, text=streamed_text.strip()))
                     return
                 appended = await asyncio.to_thread(
-                    self._append_search_roundtrip, messages, parsed.text, search_calls
+                    self._append_search_roundtrip, messages, search_calls
                 )
                 if not appended:
                     # 有効な検索が無かった（全て不正引数）ら、そのホップで確定して抜ける。
@@ -451,7 +451,6 @@ class LlmService:
     def _append_search_roundtrip(
         self,
         messages: list[dict[str, Any]],
-        hop_text: str,
         search_calls: list[ParsedToolCall],
     ) -> bool:
         """検索ホップを実行し、結果を次ホップの `messages` へ追記する（ブロッキング）。
@@ -461,6 +460,12 @@ class LlmService:
         積む（テンプレが `<|tool_call>`/`<|tool_response>` へ整形する）。引数不正な検索は
         黙って落とさずログに残してスキップし、有効な検索が 1 件も無ければ False を返す
         （呼び出し側がそのホップで確定する）。
+
+        assistant の `content` は空にする（MUST）。テンプレは content をツール応答の後に
+        描画し、非空だと `<turn|>` でモデルターンを閉じてしまい、次ホップの生成開始点が
+        消える。content 空ならターンは開いたままで、モデルは `<|tool_response>…` の直後
+        から続きを書ける（テンプレの cascade 設計）。ホップの会話テキストは既にストリーム
+        済みで最終 `result.text` にも累積されるため、ここで捨てても失われない。
         """
         valid: list[tuple[str, SearchTagsCall, str]] = []
         for i, pc in enumerate(search_calls):
@@ -480,7 +485,7 @@ class LlmService:
         messages.append(
             {
                 "role": "assistant",
-                "content": hop_text,
+                "content": "",
                 "tool_calls": [
                     {
                         "id": cid,
