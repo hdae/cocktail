@@ -79,9 +79,9 @@ def _ascii_word_boundary(text: str, start: int, end: int) -> bool:
     """
     if start > 0 and _is_ascii_word_char(text[start]) and _is_ascii_word_char(text[start - 1]):
         return False
-    if end < len(text) and _is_ascii_word_char(text[end - 1]) and _is_ascii_word_char(text[end]):
-        return False
-    return True
+    return not (
+        end < len(text) and _is_ascii_word_char(text[end - 1]) and _is_ascii_word_char(text[end])
+    )
 
 
 def _has_japanese(text: str) -> bool:
