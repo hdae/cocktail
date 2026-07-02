@@ -163,6 +163,17 @@ def build_system_prompt() -> str:
     return CONVERSATION_SYSTEM
 
 
+def display_tag(tag: str) -> str:
+    """モデルに見せるタグ表記へ正規化する（`_` → 空白）。
+
+    プロンプト規約は「lowercase, spaces, no underscores」（CONVERSATION_SYSTEM）だが、
+    CSV の正規形はアンダースコア付きで、そのまま見せるとモデルが positive へ写して規約と
+    衝突する（実機で確認）。検索要約・タグ候補注入の双方がこの 1 ヘルパを通ることで、
+    モデルへの提示形が構造的に一致する。
+    """
+    return tag.replace("_", " ")
+
+
 def compose_negative(extra: str) -> str:
     """モデルの `negative_extra` を固定ベースに前置して実効ネガを組む。
 

@@ -169,6 +169,19 @@ async def test_malformed_search_call_finalizes_without_executing_search() -> Non
 # --- 漏洩封じ込め（案A の要）-----------------------------------------------------
 
 
+async def test_search_summary_normalizes_underscores_to_spaces() -> None:
+    # CSV 正規形(texas_(arknights))をそのまま見せるとモデルが positive へ写して
+    # 「spaces, no underscores」規約と衝突する(実機で確認)。role:tool 要約はスペース区切り。
+    underscored = TagSuggestion(
+        tag="texas_(arknights)", category=4, post_count=8125, ja="テキサス", matched="テキサス"
+    )
+    svc = _service([_SEARCH_HOP, _GEN_HOP], [underscored])
+    await _drive(svc)
+    tool_msg = next(m for m in _fake_llm(svc).calls[1] if m.get("role") == "tool")
+    assert "texas (arknights) [テキサス]" in tool_msg["content"]
+    assert "texas_(arknights)" not in tool_msg["content"]
+
+
 async def test_search_results_reach_next_hop_but_not_final_text() -> None:
     # 中間検索結果は次ホップの messages(role=tool) に入るが、ユーザ向け result.text には漏れない。
     svc = _service([_SEARCH_HOP, _GEN_HOP], [_HALO])

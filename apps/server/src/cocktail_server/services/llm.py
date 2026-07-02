@@ -32,6 +32,7 @@ from cocktail_server.services.prompt_builder import (
     SEARCH_TAGS_TOOL,
     build_system_prompt,
     build_user_message,
+    display_tag,
 )
 from cocktail_server.services.tags import TagService
 
@@ -92,10 +93,14 @@ def _summarize_tags(results: list[TagSuggestion]) -> str:
 
     n_ctx 予算のため post_count / 全 alias は落とし、モデルが positive に使う tag 名と
     当たりを確認する日本語読みだけを渡す。空なら「見つからなかった」と明示する。
+    tag は `display_tag` でスペース区切りに正規化して見せる（アンダースコア形のまま
+    返すとモデルが positive へそのまま写し、プロンプト規約と衝突する）。
     """
     if not results:
         return "(no matching tags found)"
-    return "; ".join(f"{t.tag} [{t.ja}]" if t.ja else t.tag for t in results)
+    return "; ".join(
+        f"{display_tag(t.tag)} [{t.ja}]" if t.ja else display_tag(t.tag) for t in results
+    )
 
 
 def _search_args(call: SearchTagsCall) -> dict[str, Any]:
