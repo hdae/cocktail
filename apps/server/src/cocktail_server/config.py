@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     hf_home: Path = Path("./data/models")
     images_dir: Path = Path("./data/images")
     weights_dir: Path = Path("./data/weights")
+    # Danbooru タグ検索の索引元 CSV(headerless 4列: tag,category,post_count,"aliases")を置く場所。
+    tags_dir: Path = Path("./data/tags")
 
     # ビルド済みの Vite dist ディレクトリ。存在する場合のみ SPA を同一オリジンで配信する。
     # ない時 (dev 起動など) は Vite dev server を別ポートで立てて /api をプロキシする運用。
@@ -42,6 +44,18 @@ class Settings(BaseSettings):
     llm_top_p: float = Field(default=0.95, ge=0.0, le=1.0)
     llm_top_k: int = Field(default=40, ge=0)
     llm_repeat_penalty: float = Field(default=1.1, ge=0.0, le=2.0)
+
+    # Danbooru タグ検索(search_tags ツール)の索引元 CSV。hdae/danbooru-tagcomplete-extra の
+    # prebuilt CSV(日本語エイリアス入り)。`tags_csv` が無いとき `tags_auto_download` が真なら
+    # この URL から取得する。
+    tags_csv_url: str = "https://github.com/hdae/danbooru-tagcomplete-extra/releases/download/2026-05-23/danbooru.csv"
+    # 起動時に CSV 未配置なら自動ダウンロードするか。WSL2 コンテナ+オフライン運用を既定と
+    # するため vImagen の True から反転して False にし、事前配置(data/tags/danbooru.csv)を前提と
+    # する。未配置なら索引は空のまま起動し search は空を返す（TagService が warning を出す）。
+    # DECIDED: 恒久的な取得導線(scripts/ingest_danbooru.py, HF dataset 起点)は ROADMAP M5 に委ね、
+    # Phase2 は「事前配置された CSV を読む」までに範囲を絞る（docs/decisions/0002-phase2-agent-loop.md）。
+    tags_auto_download: bool = False
+
     # Anima のベース(diffusers 形式リポ)。VAE / Qwen3 text encoder / tokenizer /
     # scheduler / modular pipeline 定義をここから読む。派生(WAI-Anima 等)は DiT だけを
     # 差し替えて使うため、ベースは常にこのリポを共有する。
@@ -84,6 +98,11 @@ class Settings(BaseSettings):
         """Turbo LoRA が構成されているか。空文字なら base 品質で動く。"""
         return bool(self.image_turbo_lora)
 
+    @property
+    def tags_csv(self) -> Path:
+        """Danbooru タグ検索の索引元 CSV パス（`tags_dir` から一意に導出）。"""
+        return self.tags_dir / "danbooru.csv"
+
     def image_steps_cfg(self, *, turbo: bool | None = None) -> tuple[int, float]:
         """モードから (steps, cfg) を決める。
 
@@ -101,6 +120,7 @@ class Settings(BaseSettings):
         self.hf_home.mkdir(parents=True, exist_ok=True)
         self.images_dir.mkdir(parents=True, exist_ok=True)
         self.weights_dir.mkdir(parents=True, exist_ok=True)
+        self.tags_dir.mkdir(parents=True, exist_ok=True)
 
 
 @lru_cache(maxsize=1)

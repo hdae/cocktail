@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from cocktail_server.config import Settings
 
 _TURBO_URN = "urn:air:anima:lora:civitai:2560840@2979642"
@@ -38,3 +40,14 @@ def test_image_steps_cfg_explicit_turbo_override() -> None:
     assert s.image_steps_cfg(turbo=True) == (8, 1.0)
     # None(既定) は turbo_enabled に従う。
     assert s.image_steps_cfg() == (8, 1.0)
+
+
+def test_tags_csv_is_derived_from_tags_dir() -> None:
+    # 索引元 CSV パスは tags_dir から一意に導出する（別フィールドで二重管理しない）。
+    s = Settings(tags_dir=Path("/data/tags"))
+    assert s.tags_csv == Path("/data/tags/danbooru.csv")
+
+
+def test_tags_auto_download_defaults_off() -> None:
+    # WSL2 オフライン運用を既定にするため自動 DL は既定 OFF（事前配置前提）。
+    assert Settings().tags_auto_download is False
