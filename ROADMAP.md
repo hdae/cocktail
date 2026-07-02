@@ -247,10 +247,12 @@ M2 で Gemma への画像入力経路は既に通っている。M4
 タグ辞書なしでも動く設計を維持。**参照画像の再現は M5 でも対象外**
 （bnb 量子化ノイズで bit-perfect は不可、seed 復元は M2 で既にカバー済み）。
 
-- [ ] EmbeddingGemma 300m を常駐に追加（fp16, ~0.6GB）
-- [ ] ChromaDB + Matryoshka 256 次元
-- [ ] `scripts/ingest_danbooru.py`（HF dataset + Danbooru wiki）
-- [ ] `search_tags` ツールを Function Calling に追加
+NOTE: `search_tags`（**語彙検索**版）とエージェントループは前倒しで実装済み
+（docs/decisions/0002-phase2-agent-loop.md）。M5 に残るのは恒久取得導線と semantic RAG。
+
+- [x] `search_tags` ツールを Function Calling に追加（語彙検索・vImagen 移植）
+- [ ] `scripts/ingest_danbooru.py`（HF dataset + Danbooru wiki）で CSV 取得を恒久化
+- [ ] （必要なら）EmbeddingGemma 300m 常駐 + ChromaDB + Matryoshka 256 次元で semantic-expand
 - [ ] Gemma 単体でも Anima 記法を守れる前提は維持
 
 ## M6: 仕上げ

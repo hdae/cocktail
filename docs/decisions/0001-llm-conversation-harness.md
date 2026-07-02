@@ -50,10 +50,10 @@ Gemma を「まず普通に対話できるモデル」として扱い、画像�
 
 5. **thought チャネルは UI 非表示**（Phase 1）。内部ログにのみ残す。折りたたみ表示は後日。
 
-6. **タグ検索は語彙検索主軸**（vImagen `services/tags.py` 移植予定、Phase 2）。EmbeddingGemma+
-   Faiss は booru 語彙に構造的に不適（人気信号消失・実在検証不可・日本語弱・character 不透明）
-   のため当面採用せず、純意味クエリが実運用で頻発すると確認できたら semantic-expand
-   フォールバックとして追加検討する。
+6. **タグ検索は語彙検索主軸**（vImagen `services/tags.py` を Phase 2 で移植済み。設計詳細は
+   [0002](0002-phase2-agent-loop.md)）。EmbeddingGemma+ Faiss は booru 語彙に構造的に不適
+   （人気信号消失・実在検証不可・日本語弱・character 不透明）のため当面採用せず、純意味クエリが
+   実運用で頻発すると確認できたら semantic-expand フォールバックとして追加検討する。
 
 ## Consequences
 
@@ -61,8 +61,8 @@ Gemma を「まず普通に対話できるモデル」として扱い、画像�
 - `native_tools` と negative 簡略化は明示的な一時措置。解消トリガに達したら本 ADR を
   更新して撤去する。
 - クライアントは会話テキストを Markdown 描画（`components/Markdown.tsx`、react-markdown）。
-- Phase 2 でタグ検索ツール + エージェントループ（検索→検索→生成）を追加予定。パーサは
-  複数ツール・ループ対応可能に設計済み（配線は未実施）。
+- Phase 2 でタグ検索ツール + エージェントループ（検索→検索→生成）を追加済み（[0002](0002-phase2-agent-loop.md)）。
+  複数ツール対応のパーサ設計がそのまま活き、案A の封じ込めで消費側の契約は不変に保てた。
 
 ## 既知の制約（native_tools パーサ）
 
