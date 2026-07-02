@@ -32,6 +32,8 @@ dependencies = [
     "protobuf>=5",
     "python-multipart>=0.0.18",
     "json-repair>=0.30",
+    # Danbooru タグ検索(services/tags.py)の Tier3 タイポ許容ファジー照合に使う。
+    "rapidfuzz>=3.14.5",
 ]
 
 [build-system]
