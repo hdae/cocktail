@@ -17,6 +17,10 @@ Gemma を「まず普通に対話できるモデル」として扱い、画像�
   整形し、モデルは native 形式で応答する:
   `<会話テキスト><|channel>thought<channel|>...<|tool_call>call:NAME{key:<|"|>val<|"|>,...}<tool_call|>`。
   会話のみのターンはマーカー無しの素テキスト。
+  （**訂正**: この形式解釈は後に誤りと判明した。正文法は `<|channel>`＝開き /
+  `<channel|>`＝閉じの span で、思考は span の**中**、本文は span の**外側すべて**。
+  当時の観測は「ghost 空 thought `<|channel>thought\n<channel|>`」を「ヘッダ」と読み違えた
+  もの。[0004](0004-native-channel-grammar.md)）
 - **llama-cpp-python 0.3.32 はこの native トークンを構造化 `tool_calls` にパースできず**、
   生トークンが `message.content` に漏れ `tool_calls=None` になる
   （[abetlen/llama-cpp-python#2227](https://github.com/abetlen/llama-cpp-python/issues/2227)、
@@ -69,9 +73,10 @@ Gemma を「まず普通に対話できるモデル」として扱い、画像�
 - ツール呼び出しの閉じ検出 `<tool_call|>` は文字列値の内側を区別しない。プロンプト値が
   リテラル `<tool_call|>` を含むと途中で切れる。Danbooru タグ/英語キャプションに当該
   トークンが現れることは事実上無いため、過剰実装を避けて未対応とする（NOTE のみ）。
-- 会話テキストは「最初のマーカーより前の領域」と定義する。モデルは実測でマーカー前に
-  素テキストで会話を出すためこれで十分だが、仮に `<|channel>final<channel|>` に返答を
-  包んだ場合その内容は表示されない（逐次表示との一貫性を優先した割り切り）。
+- ~~会話テキストは「最初のマーカーより前の領域」と定義する。~~（**この定義は誤りで、
+  ghost 空 thought の後ろに来る本文を丸ごと隠す「本文欠落」バグの根因だった。span 文法へ
+  是正済み: [0004](0004-native-channel-grammar.md)。なお "final" チャネルは公式仕様に
+  存在しないことも確認済み）
 
 ## 多ターンの形式ドリフト対策（実機で判明・修正済み）
 
