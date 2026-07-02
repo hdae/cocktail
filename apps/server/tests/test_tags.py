@@ -93,6 +93,81 @@ def test_index_size_reflects_row_count(index: TagIndex) -> None:
     assert index.size == 10
 
 
+# --- TagIndex.match_in_text: 発話文からの逆引き（タグ候補注入の実体）---------------
+
+# 逆引きケース専用の固定フィクスチャ（実 CSV で確認した曖昧・包含関係を縮約再現）:
+# 「花火」= fireworks と sparkle の両義、「花火大会」⊃「花火」、「カメラ目線」⊃「カメラ」、
+# 1 文字エイリアス「絵」、ASCII エイリアス miku。
+_MATCH_FIXTURE_CSV = """\
+1girl,0,7899553,"女の子"
+smile,0,5000000,"笑顔"
+looking_at_viewer,0,4000000,"カメラ目線"
+camera,0,300000,"カメラ"
+hatsune_miku,4,2000000,"初音ミク,miku,ミク"
+fireworks,0,18014,"花火"
+sparkle_(honkai:_star_rail),4,7057,"花火(スターレイル),花火"
+aerial_fireworks,0,12137,"打ち上げ花火,花火大会"
+e,0,999999,"絵"
+"""
+
+
+@pytest.fixture
+def match_index(tmp_path: Path) -> TagIndex:
+    return TagIndex(parse_csv(_write_csv(tmp_path, _MATCH_FIXTURE_CSV)))
+
+
+def test_match_resolves_japanese_alias_in_sentence(match_index: TagIndex) -> None:
+    # 発話文中の日本語エイリアスから正規タグへ逆引きし、matched に当たったキーが入る。
+    results = match_index.match_in_text("初音ミクを制服姿で1枚お願い。")
+    assert [r.tag for r in results] == ["hatsune_miku"]
+    assert results[0].matched == "初音ミク"
+
+
+def test_match_ranks_multiple_hits_by_post_count(match_index: TagIndex) -> None:
+    # 複数ヒットは post_count 降順（カテゴリでの優遇はしない）。
+    results = match_index.match_in_text("笑顔の女の子")
+    assert [r.tag for r in results] == ["1girl", "smile"]
+
+
+def test_match_ambiguous_alias_returns_all_rows(match_index: TagIndex) -> None:
+    # 同一キーが複数行の alias（「花火」= fireworks / sparkle）なら全行を候補に返し、
+    # 文脈での選択はモデルに委ねる。
+    results = match_index.match_in_text("花火を描いてほしいな。")
+    assert [r.tag for r in results] == ["fireworks", "sparkle_(honkai:_star_rail)"]
+
+
+def test_match_prefers_leftmost_longest_key(match_index: TagIndex) -> None:
+    # 「花火大会」は最長一致で aerial_fireworks だけに当たり、内側の「花火」を重ねて拾わない。
+    # 1 文字エイリアス（「絵」）は最短キー長で照合対象外。
+    results = match_index.match_in_text("花火大会の絵にして")
+    assert [r.tag for r in results] == ["aerial_fireworks"]
+    results = match_index.match_in_text("カメラ目線でお願い")
+    assert [r.tag for r in results] == ["looking_at_viewer"]
+
+
+def test_match_ascii_requires_word_boundary(match_index: TagIndex) -> None:
+    # ASCII キーは単語境界を要求（"miku" を "mikura" に当てない）。CJK 境界には干渉しない。
+    assert match_index.match_in_text("mikuraという場所の話") == []
+    results = match_index.match_in_text("Mikuを描いて")
+    assert [r.tag for r in results] == ["hatsune_miku"]
+
+
+def test_match_returns_empty_for_plain_chat(match_index: TagIndex) -> None:
+    # タグ語を含まない雑談にはヒット無し = 注入ブロック自体が出ない（自然なゲート）。
+    assert match_index.match_in_text("ありがとう、たすかった！") == []
+
+
+def test_match_caps_at_limit(match_index: TagIndex) -> None:
+    results = match_index.match_in_text("笑顔の女の子", limit=1)
+    assert [r.tag for r in results] == ["1girl"]
+
+
+def test_service_match_is_empty_before_index_loads() -> None:
+    # 索引未構築(load 前)は search と同じく空で graceful degradation。
+    service = TagService(Settings())
+    assert service.match_in_text("初音ミクを描いて") == []
+
+
 # --- TagService: ライフサイクル ---------------------------------------------------
 
 

@@ -20,6 +20,10 @@ alias 列に英語読み・日本語読み・中国語表記が混在するた�
 ランキングは `(tier, post_count)` 降順。tier 基底は 1000 刻みで離してあり、
 sort 時に足す post_count が tier 境界を跨がない（人気は同 tier 内でのみ効く）。
 
+`match_in_text` は逆方向の照合（発話文→その中に現れる tag/alias）で、事前検索の
+タグ候補注入（tag hints）の実体。sliding window で最左最長一致を貪欲に取り、
+post_count 降順で返す（docs/decisions/0005-tag-hints-presearch.md）。
+
 NOTE: vImagen `apps/api/src/vimagen_api/services/tags.py` からの移植。paste 補完用の
 `lookup`/REST 面は Phase2(エージェントループ)では不要なので移植していない。
 """
@@ -53,11 +57,31 @@ _TIER_ALIAS_SUBSTRING = 1000
 # 短いタグを過大評価する(query「mastrpiece」で「mast」が「masterpiece」を上回る)。
 _FUZZY_CUTOFF = 75.0
 
+# 逆引き(match_in_text)の最短キー長。1 文字キー(「絵」「顔」等)は日本語文で無差別に
+# 当たるノイズ源なので照合対象にしない。
+_MATCH_MIN_KEY = 2
+
 
 def _normalize(text: str) -> str:
     """小文字化し、`_` と空白を等価に扱う（danbooru タグとフリー入力が一致する:
     `looking at` ↔ `looking_at_viewer`）。日本語には影響しない。"""
     return text.strip().lower().replace("_", " ")
+
+
+def _is_ascii_word_char(ch: str) -> bool:
+    return ch.isascii() and ch.isalnum()
+
+
+def _ascii_word_boundary(text: str, start: int, end: int) -> bool:
+    """ASCII 英数語の途中で始まる/終わる照合を弾く（"miku" を "mikura" に当てない）。
+
+    CJK には単語境界が無いので、境界チェックは両隣が ASCII 英数のときだけ効かせる。
+    """
+    if start > 0 and _is_ascii_word_char(text[start]) and _is_ascii_word_char(text[start - 1]):
+        return False
+    if end < len(text) and _is_ascii_word_char(text[end - 1]) and _is_ascii_word_char(text[end]):
+        return False
+    return True
 
 
 def _has_japanese(text: str) -> bool:
@@ -140,6 +164,21 @@ class TagIndex:
         self._alias_idx = [idx for _, idx, _ in alias_triples]
         self._alias_orig = [original for _, _, original in alias_triples]
 
+        # 逆引き(match_in_text)用の完全一致辞書: 正規化キー → 行 index 群。キー文字列は
+        # 既存の norm フィールドを共有するため、追加メモリは dict 構造ぶんのみ。
+        match_keys: dict[str, list[int]] = {}
+        max_key_len = 0
+        for i, row in enumerate(rows):
+            for norm in (row.norm_tag, *row.norm_aliases):
+                if len(norm) < _MATCH_MIN_KEY:
+                    continue
+                entries = match_keys.setdefault(norm, [])
+                if not entries or entries[-1] != i:
+                    entries.append(i)
+                max_key_len = max(max_key_len, len(norm))
+        self._match_keys = match_keys
+        self._max_key_len = max_key_len
+
     @property
     def size(self) -> int:
         return len(self._rows)
@@ -201,6 +240,46 @@ class TagIndex:
             reverse=True,
         )[:limit]
         return [self._suggestion(idx, matched) for idx, (_score, matched) in ranked]
+
+    def match_in_text(self, text: str, limit: int = 8) -> list[TagSuggestion]:
+        """発話文の中に現れる tag/alias を逆引きし、post_count 降順で返す。
+
+        `search` がクエリ→タグの前方照合なのに対し、こちらは文→タグの完全一致照合
+        （事前検索のタグ候補注入の実体）。sliding window で各位置の最長キーを貪欲に
+        取る（最左最長一致）: 「花火大会」は aerial_fireworks だけに当たり、内側の
+        「花火」を重ねて拾わない。同一キーが複数行の alias のとき（「花火」=
+        fireworks と sparkle）は全行を返し、文脈での選択はモデルに委ねる。
+
+        `matched` はヒットしたキー（正規化形。日本語 alias は原形と一致する）、
+        tag 名の直接ヒットは `search` と同じく None。カテゴリでの絞り込み・優遇は
+        しない（post_count 順のみ。docs/decisions/0005-tag-hints-presearch.md）。
+        計算量は O(len(text) × 最長キー長) のハッシュ照合で、会話文ならサブ ms。
+        """
+        normalized = _normalize(text)
+        n = len(normalized)
+        found: dict[int, str] = {}  # 行 index → ヒットキー（最初の=最左のものを保持）
+        i = 0
+        while i < n:
+            hit = ""
+            for length in range(min(self._max_key_len, n - i), _MATCH_MIN_KEY - 1, -1):
+                key = normalized[i : i + length]
+                if key in self._match_keys and _ascii_word_boundary(normalized, i, i + length):
+                    hit = key
+                    break
+            if not hit:
+                i += 1
+                continue
+            for idx in self._match_keys[hit]:
+                found.setdefault(idx, hit)
+            i += len(hit)
+
+        ranked = sorted(
+            found.items(), key=lambda item: self._rows[item[0]].post_count, reverse=True
+        )
+        return [
+            self._suggestion(idx, None if key == self._rows[idx].norm_tag else key)
+            for idx, key in ranked[:limit]
+        ]
 
     @staticmethod
     def _prefix_positions(sorted_norms: list[str], query: str) -> range:
@@ -269,6 +348,12 @@ class TagService:
         if index is None:
             return []
         return index.search(query, limit, category)
+
+    def match_in_text(self, text: str, limit: int = 8) -> list[TagSuggestion]:
+        index = self._index
+        if index is None:
+            return []
+        return index.match_in_text(text, limit)
 
     def _ensure_csv(self) -> Path | None:
         path = self._settings.tags_csv
