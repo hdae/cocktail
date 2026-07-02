@@ -13,23 +13,27 @@ from typing import Any, Final
 
 from pydantic import ValidationError
 
-from cocktail_server.schemas.generate import GenerateImageCall
+from cocktail_server.schemas.generate import GenerateImageCall, SearchTagsCall
 from cocktail_server.schemas.messages import (
     Message,
     TextPart,
     ToolCallPart,
 )
+from cocktail_server.schemas.tags import TagSuggestion
 from cocktail_server.services.native_tools import (
     NativeToolStream,
+    ParsedToolCall,
     ParsedTurn,
     parse_native_output,
     render_tool_call,
 )
 from cocktail_server.services.prompt_builder import (
     GENERATE_IMAGE_TOOL,
+    SEARCH_TAGS_TOOL,
     build_system_prompt,
     build_user_message,
 )
+from cocktail_server.services.tags import TagService
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +41,13 @@ logger = logging.getLogger(__name__)
 # + 数ターンの履歴を見込んだ余裕。
 _MAX_TOKENS: Final[int] = 1024
 _N_CTX: Final[int] = 8192
+
+# エージェントループの上限ホップ数（検索→検索→生成の最大 3 ホップ）。無限ループと n_ctx
+# 膨張を構造的に封じる。実機計測で system+tools≈2036tok / n_ctx=8192 のため 3 ホップは十分安全
+# （中間検索結果は上位 N 件の {tag, ja} 要約のみ戻すので 1 ホップ数百 token に収まる）。
+_MAX_ITERS: Final[int] = 3
+# モデルへ戻す検索候補の件数（n_ctx 予算のため要約する。多すぎると positive を埋没させる）。
+_SEARCH_TOP_N: Final[int] = 8
 
 
 @dataclass(frozen=True)
@@ -49,7 +60,10 @@ class LlmTextDelta:
 @dataclass(frozen=True)
 class LlmTurnResult:
     """1 ターンの確定結果。`text`=会話テキスト、`thought`=非表示の思考、
-    `tool_calls`=検証済み呼び出し（Phase 1 は 0 or 1 件の generate_image）。"""
+    `tool_calls`=検証済み呼び出し（0 or 1 件の generate_image）。
+
+    `search_tags` は `run_turn` のエージェントループ内で解決され外へは出ないため、
+    ここに現れるツールは常に generate_image のみ（消費側の契約は Phase 1 から不変）。"""
 
     text: str
     thought: str
@@ -64,6 +78,36 @@ class LlmTurnComplete:
 
 
 LlmStreamChunk = LlmTextDelta | LlmTurnComplete
+
+
+@dataclass(frozen=True)
+class _HopResult:
+    """エージェントループ 1 ホップの内部確定結果（`run_turn` 内でのみ使う）。"""
+
+    parsed: ParsedTurn
+
+
+def _summarize_tags(results: list[TagSuggestion]) -> str:
+    """検索結果を `role:tool` へ戻す最小要約に整形する（`tag [ja]` を並べる）。
+
+    n_ctx 予算のため post_count / 全 alias は落とし、モデルが positive に使う tag 名と
+    当たりを確認する日本語読みだけを渡す。空なら「見つからなかった」と明示する。
+    """
+    if not results:
+        return "(no matching tags found)"
+    return "; ".join(f"{t.tag} [{t.ja}]" if t.ja else t.tag for t in results)
+
+
+def _search_args(call: SearchTagsCall) -> dict[str, Any]:
+    """検索呼び出しを assistant `tool_calls` へ replay するための引数 mapping。
+
+    Gemma 4 テンプレは mapping の arguments を native 形式へ整形する。`category` は
+    指定時のみ含める（None は絞り込み無効なので省く）。
+    """
+    args: dict[str, Any] = {"query": call.query}
+    if call.category is not None:
+        args["category"] = call.category
+    return args
 
 
 def _extract_user_text(msg: Message) -> str:
@@ -229,6 +273,7 @@ class LlmService:
         model_id: str,
         *,
         hf_home: Path,
+        tags: TagService,
         temperature: float = 0.7,
         top_p: float = 0.95,
         top_k: int = 40,
@@ -236,6 +281,7 @@ class LlmService:
     ) -> None:
         self._model_id = model_id
         self._hf_home = hf_home
+        self._tags = tags
         self._llm: Any = None  # llama_cpp.Llama | None
         self._n_ctx = _N_CTX
         self._temperature = temperature
@@ -302,25 +348,47 @@ class LlmService:
         logger.info("free llm: %.0f ms", (perf_counter_ns() - t0) / 1_000_000)
 
     async def run_turn(self, history: list[Message]) -> AsyncIterator[LlmStreamChunk]:
-        """1 ターン分を生成。会話テキストを `LlmTextDelta` で逐次流し、最後に `LlmTurnComplete`。
+        """1 ターン分を「検索→(必要なだけ)検索→生成」のエージェントループで生成する。
 
-        `history` は会話の全メッセージ（末尾が今回のユーザ発話）。過去ターンの
-        アシスタント応答は保存済み parts からプレーンテキストで復元して渡す。
+        既定は自由文の会話。モデルが `search_tags` を native 呼び出ししたら、その候補を
+        サーバ側(`TagService`)で引いて `role:tool` で戻し、次ホップを回す。`generate_image`
+        か会話確定（ツール無し）か `_MAX_ITERS` 到達で確定する。検索の中間往復は会話履歴・
+        SSE・永続化に一切出さず、この関数内で完結する（消費側の契約は不変）。
 
-        ストリーム中の native パースに失敗したら、同期でリプレイ（text_delta は流さない）。
-        attempt 0 でユーザに見えたテキストは `result.text` に上書きして整合を取る。
-        リトライも失敗したらチャットのみ応答へ縮退する（ターンを内部エラーで落とさない）。
+        会話テキストは各ホップの `LlmTextDelta` を逐次流し、確定 `result.text` は「実際に
+        流したテキスト」に一致させる（逐次表示との乖離を排除）。native パースに失敗したら
+        非ストリームで単発リトライ→チャットのみ縮退（ターンを内部エラーで落とさない）。
         """
         if self._llm is None:
             await asyncio.to_thread(self.load)
 
+        messages = _build_chat_messages(history)
         streamed_text = ""
         try:
-            async for chunk in self._stream_once(history, temperature=self._temperature):
-                if isinstance(chunk, LlmTextDelta):
-                    streamed_text += chunk.delta
-                yield chunk
-            return
+            for hop in range(_MAX_ITERS):
+                parsed: ParsedTurn | None = None
+                async for chunk in self._stream_hop(messages):
+                    if isinstance(chunk, LlmTextDelta):
+                        streamed_text += chunk.delta
+                        yield chunk
+                    else:
+                        parsed = chunk.parsed
+                assert parsed is not None, "hop ended without a _HopResult"
+
+                gen_present = any(c.name == "generate_image" for c in parsed.tool_calls)
+                search_calls = [c for c in parsed.tool_calls if c.name == "search_tags"]
+                is_last_hop = hop == _MAX_ITERS - 1
+                # generate_image / 会話確定 / 上限到達 なら確定。search のみなら往復して次ホップ。
+                if gen_present or not search_calls or is_last_hop:
+                    yield LlmTurnComplete(result=_build_result(parsed, text=streamed_text.strip()))
+                    return
+                appended = await asyncio.to_thread(
+                    self._append_search_roundtrip, messages, parsed.text, search_calls
+                )
+                if not appended:
+                    # 有効な検索が無かった（全て不正引数）ら、そのホップで確定して抜ける。
+                    yield LlmTurnComplete(result=_build_result(parsed, text=streamed_text.strip()))
+                    return
         except (ValueError, ValidationError) as exc:
             logger.warning("native turn streaming parse failed, retrying: %s", exc)
 
@@ -335,10 +403,10 @@ class LlmService:
             result = replace(result, text=streamed_text)
         yield LlmTurnComplete(result=result)
 
-    def _create_kwargs(self, history: list[Message], *, temperature: float) -> dict[str, Any]:
+    def _hop_kwargs(self, messages: list[dict[str, Any]], *, temperature: float) -> dict[str, Any]:
         return {
-            "messages": _build_chat_messages(history),
-            "tools": [GENERATE_IMAGE_TOOL],
+            "messages": messages,
+            "tools": [GENERATE_IMAGE_TOOL, SEARCH_TAGS_TOOL],
             "tool_choice": "auto",
             "max_tokens": _MAX_TOKENS,
             "temperature": temperature,
@@ -347,13 +415,62 @@ class LlmService:
             "repeat_penalty": self._repeat_penalty,
         }
 
-    async def _stream_once(
-        self, history: list[Message], *, temperature: float
-    ) -> AsyncIterator[LlmStreamChunk]:
+    def _append_search_roundtrip(
+        self,
+        messages: list[dict[str, Any]],
+        hop_text: str,
+        search_calls: list[ParsedToolCall],
+    ) -> bool:
+        """検索ホップを実行し、結果を次ホップの `messages` へ追記する（ブロッキング）。
+
+        Gemma 4 テンプレの OpenAI 互換経路に合わせ、モデルの検索要求を構造化 `tool_calls`
+        を持つ assistant メッセージとして、結果を `tool_call_id` 一致の `role:tool` として
+        積む（テンプレが `<|tool_call>`/`<|tool_response>` へ整形する）。引数不正な検索は
+        黙って落とさずログに残してスキップし、有効な検索が 1 件も無ければ False を返す
+        （呼び出し側がそのホップで確定する）。
+        """
+        valid: list[tuple[str, SearchTagsCall, str]] = []
+        for i, pc in enumerate(search_calls):
+            try:
+                call = SearchTagsCall.from_native(pc.args)
+            except ValidationError as exc:
+                logger.warning("skipping malformed search_tags call %r: %s", pc.args, exc)
+                continue
+            results = self._tags.search(call.query, limit=_SEARCH_TOP_N, category=call.category)
+            summary = _summarize_tags(results)
+            logger.info("search_tags %r (category=%s) -> %s", call.query, call.category, summary)
+            valid.append((f"search_{len(messages)}_{i}", call, summary))
+
+        if not valid:
+            return False
+
+        messages.append(
+            {
+                "role": "assistant",
+                "content": hop_text,
+                "tool_calls": [
+                    {
+                        "id": cid,
+                        "type": "function",
+                        "function": {"name": "search_tags", "arguments": _search_args(call)},
+                    }
+                    for cid, call, _summary in valid
+                ],
+            }
+        )
+        for cid, _call, summary in valid:
+            messages.append({"role": "tool", "tool_call_id": cid, "content": summary})
+        return True
+
+    async def _stream_hop(
+        self, messages: list[dict[str, Any]]
+    ) -> AsyncIterator[LlmTextDelta | _HopResult]:
+        """1 ホップをストリーミングし、会話テキストを `LlmTextDelta` で流して最後に
+        `_HopResult`（パース済み）を 1 度だけ yield する（`run_turn` 内部専用）。"""
         llm = self._llm
         assert llm is not None
 
-        kwargs = self._create_kwargs(history, temperature=temperature)
+        kwargs = self._hop_kwargs(messages, temperature=self._temperature)
         loop = asyncio.get_running_loop()
 
         def _open_stream() -> Any:
@@ -363,7 +480,6 @@ class LlmService:
         stream = await loop.run_in_executor(None, _open_stream)
 
         parser = NativeToolStream()
-        streamed = ""
         while True:
             chunk = await loop.run_in_executor(None, _safe_next, stream)
             if chunk is _STOP:
@@ -373,12 +489,10 @@ class LlmService:
                 continue
             new_text = parser.feed(piece)
             if new_text:
-                streamed += new_text
                 yield LlmTextDelta(delta=new_text)
         # マーカーが来ないまま終わった場合に保留していた末尾を確定して流す。
         tail = parser.flush()
         if tail:
-            streamed += tail
             yield LlmTextDelta(delta=tail)
 
         parsed = parse_native_output(parser.raw)
@@ -386,16 +500,15 @@ class LlmService:
         logger.info("Gemma raw output: %r", parser.raw)
         if parsed.thought:
             logger.info("Gemma thought (hidden): %s", parsed.thought)
-        # 永続化テキストは「実際に流したテキスト」に一致させ、逐次表示との乖離を排除する。
-        # thought / tool_calls のみ parse から取る。
-        yield LlmTurnComplete(result=_build_result(parsed, text=streamed.strip()))
+        yield _HopResult(parsed=parsed)
 
     def _sync_turn(self, history: list[Message]) -> LlmTurnResult:
         llm = self._llm
         assert llm is not None
 
+        messages = _build_chat_messages(history)
         out = llm.create_chat_completion(
-            **self._create_kwargs(history, temperature=self._temperature)
+            **self._hop_kwargs(messages, temperature=self._temperature)
         )
         text = out["choices"][0]["message"].get("content") or ""
         parsed = parse_native_output(text)

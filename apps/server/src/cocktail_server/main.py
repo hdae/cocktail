@@ -25,6 +25,7 @@ from cocktail_server.services.conversation_store import ConversationStore
 from cocktail_server.services.image_gen import ImageGenService
 from cocktail_server.services.llm import LlmService
 from cocktail_server.services.model_manager import ModelManager, Policy
+from cocktail_server.services.tags import TagService
 from cocktail_server.services.turn_registry import TurnRegistry
 
 logger = logging.getLogger(__name__)
@@ -89,15 +90,19 @@ async def _run_preload(
     manager: ModelManager,
     llm: LlmService,
     image_gen: ImageGenService,
+    tags: TagService,
     policy: Policy,
 ) -> None:
-    """fetch_models → LLM ロード → (coresident なら) Image ロード を順に実行。
+    """タグ索引ロード → fetch_models → LLM ロード → (coresident なら) Image ロード を実行。
 
     進捗を `app.state.startup_state` に反映し、終了時に必ず `ready_event` を set する。
     例外時は `startup_error` にメッセージを残し、state を `error` に遷移させる。
     """
     ready_event: asyncio.Event = app.state.ready_event
     try:
+        # タグ索引は CPU/ディスクのみで GPU/ネットワーク非依存。先に軽く立てておく（search_tags 用）。
+        await asyncio.to_thread(tags.load)
+
         app.state.startup_state = "downloading"
         logger.info("ensuring models on disk…")
         resolved = await asyncio.to_thread(fetch_models.ensure_all, settings)
@@ -154,9 +159,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.residency_coresident_threshold_gb,
     )
 
+    tags = TagService(settings)
     llm = LlmService(
         settings.llm_model_id,
         hf_home=settings.hf_home,
+        tags=tags,
         temperature=settings.llm_temperature,
         top_p=settings.llm_top_p,
         top_k=settings.llm_top_k,
@@ -200,7 +207,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if settings.startup_preload:
         # lifespan を即座に完了させ、ポートは bind されるがモデル準備はバックグラウンドで進める。
         preload_task = asyncio.create_task(
-            _run_preload(app, settings, manager, llm, image_gen, policy)
+            _run_preload(app, settings, manager, llm, image_gen, tags, policy)
         )
     else:
         ready_event.set()
