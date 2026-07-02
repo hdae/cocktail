@@ -44,14 +44,24 @@ class Settings(BaseSettings):
     llm_top_p: float = Field(default=0.95, ge=0.0, le=1.0)
     llm_top_k: int = Field(default=40, ge=0)
     llm_repeat_penalty: float = Field(default=1.1, ge=0.0, le=2.0)
-    # コンテキスト長。長い会話履歴・検索往復・(将来の)画像入力トークンを見込む。16GB VRAM では
-    # fp16 KV だと 16384 で溢れるため、KV 量子化を併用して収める（下記 llm_kv_cache_type）。
-    llm_n_ctx: int = Field(default=16384, ge=512, le=131072)
-    # KV キャッシュの量子化型。f16=無量子化(VRAM 大)、q8_0=品質ほぼ無劣化で半減(既定)、
-    # q4_0=更に半減(超長文脈用)。q8_0/q4_0 は flash_attn=True が前提で、K/V は同型必須。
-    llm_kv_cache_type: Literal["f16", "q8_0", "q4_0"] = "q8_0"
+    # コンテキスト長。長い会話履歴・検索往復・(将来の)画像入力トークンを見込む。iSWA の
+    # コンパクト KV（下記 llm_swa_full=False）+ fp16 KV なら 32768 でもプロセス約 8.8GB に
+    # 収まる（16GB 実測）。
+    llm_n_ctx: int = Field(default=32768, ge=512, le=131072)
+    # KV キャッシュの量子化型。既定 f16(無量子化)。
+    # DECIDED: q8_0 既定は撤回。旧既定(q8_0+16384)の実運用多ターンで指示追従・ツール安定性の
+    # 劣化が報告された。A/B 実測では劣化の主因は KV 型でなく文脈の深さだったが、iSWA
+    # コンパクト化で VRAM コストが消えた以上、量子化 KV を既定に残す理由がない
+    # （docs/decisions/0003-kv-cache-fp16-iswa.md）。q8_0/q4_0 を使う場合は flash_attn=True が
+    # 前提で、K/V は同型必須。
+    llm_kv_cache_type: Literal["f16", "q8_0", "q4_0"] = "f16"
     # FlashAttention。KV 量子化(特に V)に必須。既定 True。
     llm_flash_attn: bool = True
+    # iSWA(Gemma 4)の SWA 層 KV を n_ctx 全長ぶん確保するか。False(既定)はウィンドウ長に
+    # 切り詰める: 注意のセマンティクスは同一のまま KV が激減し decode も速い（実測 72 tok/s）。
+    # フルサイズの利点は深い履歴分岐でのキャッシュ再利用だけで、その場合も llama.cpp が
+    # 全文再評価に正しくフォールバックする（品質差なし・レイテンシのみ）。
+    llm_swa_full: bool = False
 
     # Danbooru タグ検索(search_tags ツール)の索引元 CSV。hdae/danbooru-tagcomplete-extra の
     # prebuilt CSV(日本語エイリアス入り)。`tags_csv` が無いとき `tags_auto_download` が真なら

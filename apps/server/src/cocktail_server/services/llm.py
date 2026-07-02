@@ -37,8 +37,9 @@ from cocktail_server.services.tags import TagService
 
 logger = logging.getLogger(__name__)
 
-# GGUF 推論パラメータ。max_tokens は会話 + 1 ツール分。n_ctx / KV 量子化 / flash_attn は
-# Settings から注入する（16GB VRAM に長文脈を収めるため既定は 16384 + q8_0 KV + flash_attn）。
+# GGUF 推論パラメータ。max_tokens は会話 + 1 ツール分。n_ctx / KV 型 / flash_attn / swa_full
+# は Settings から注入する（既定は fp16 KV + iSWA コンパクトキャッシュで 32768。
+# docs/decisions/0003-kv-cache-fp16-iswa.md）。
 _MAX_TOKENS: Final[int] = 1024
 
 # エージェントループの上限ホップ数（検索→検索→生成の最大 3 ホップ）。無限ループと n_ctx
@@ -273,9 +274,10 @@ class LlmService:
         *,
         hf_home: Path,
         tags: TagService,
-        n_ctx: int = 16384,
-        kv_cache_type: str = "q8_0",
+        n_ctx: int = 32768,
+        kv_cache_type: str = "f16",
         flash_attn: bool = True,
+        swa_full: bool = False,
         temperature: float = 0.7,
         top_p: float = 0.95,
         top_k: int = 40,
@@ -288,6 +290,7 @@ class LlmService:
         self._n_ctx = n_ctx
         self._kv_cache_type = kv_cache_type
         self._flash_attn = flash_attn
+        self._swa_full = swa_full
         self._temperature = temperature
         self._top_p = top_p
         self._top_k = top_k
@@ -320,11 +323,12 @@ class LlmService:
             flash_attn = True
 
         logger.info(
-            "Loading GGUF LLM: %s (n_ctx=%d, kv=%s, flash_attn=%s)",
+            "Loading GGUF LLM: %s (n_ctx=%d, kv=%s, flash_attn=%s, swa_full=%s)",
             Path(path).name,
             self._n_ctx,
             self._kv_cache_type,
             flash_attn,
+            self._swa_full,
         )
         t0 = perf_counter_ns()
         self._llm = Llama(
@@ -334,6 +338,7 @@ class LlmService:
             flash_attn=flash_attn,
             type_k=kv_type,
             type_v=kv_type,
+            swa_full=self._swa_full,
             verbose=False,
         )
         logger.info("load llm (gguf): %.0f ms", (perf_counter_ns() - t0) / 1_000_000)

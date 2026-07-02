@@ -53,9 +53,12 @@ def test_tags_auto_download_defaults_off() -> None:
     assert Settings().tags_auto_download is False
 
 
-def test_context_length_defaults_are_long_with_kv_quant() -> None:
-    # 16GB に収めるため長文脈は KV 量子化(q8_0)+flash_attn 前提が既定。
+def test_context_length_defaults_fp16_kv_with_compact_swa() -> None:
+    # 退行ガード: 旧既定(q8_0+16384)は実運用の多ターンで劣化が報告され撤回した。
+    # 既定は fp16 KV + iSWA コンパクトキャッシュ(swa_full=False) + 32768
+    # （実測と経緯は docs/decisions/0003-kv-cache-fp16-iswa.md）。
     s = Settings()
-    assert s.llm_n_ctx == 16384
-    assert s.llm_kv_cache_type == "q8_0"
+    assert s.llm_n_ctx == 32768
+    assert s.llm_kv_cache_type == "f16"
     assert s.llm_flash_attn is True
+    assert s.llm_swa_full is False
