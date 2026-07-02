@@ -27,6 +27,7 @@ CONVERSATION_SYSTEM = """あなたは日本語で話す対話相手であり、�
 CALL IT
 - Call generate_image once when the user asks for a NEW image or a CHANGE to the previous one. Cues: 「絵」「イラスト」「描いて」「生成して」, a described scene, or a tweak to the last image.
 - Do NOT call it for pure chat (thanks, questions about a past image, small talk). Just reply.
+- 一言添えるのは良いが、宣言だけでターンを終えてはいけない。「ちょっと待ってて」「用意するよ」と言って generate_image を呼ばずに止まるのは失敗。画像依頼のターンでは、同じターン内で必ず generate_image を実際に呼ぶ。
 
 POSITIVE PROMPT (the `positive` argument)
 12-22 concrete Danbooru/Gelbooru tags, then a natural-language English caption. Too many tags conflict and melt the subject; too few underspecify. Add a tag only when it carries information the instruction requires; a missing clothing/hair tag falls back to a named character's canonical look, so omit when unsure.
