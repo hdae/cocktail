@@ -14,6 +14,49 @@ ASPECT_RATIO_RESOLUTIONS: dict[AspectRatio, tuple[int, int]] = {
 }
 
 
+# Danbooru ネイティブのカテゴリ整数。これ以外(モデルの誤値)は絞り込み無効として None に落とす。
+_KNOWN_TAG_CATEGORIES: frozenset[int] = frozenset({0, 1, 3, 4, 5})
+
+
+def _coerce_tag_category(raw: str | None) -> int | None:
+    """native DSL の文字列カテゴリを検証済み整数へ。既知カテゴリ以外・非整数は None（絞り込み無効）。"""
+    if raw is None:
+        return None
+    try:
+        value = int(raw.strip())
+    except (ValueError, AttributeError):
+        return None
+    return value if value in _KNOWN_TAG_CATEGORIES else None
+
+
+class SearchTagsCall(BaseModel):
+    """Gemma が native tool 形式で出す `search_tags` 呼び出しの検証済み表現。
+
+    正規 Danbooru タグ/キャラ表記に確信が持てないとき、概念(英語 or 日本語)から候補を
+    引くための検索クエリ。`category` を与えると Danbooru カテゴリ(0 general / 1 artist /
+    3 copyright / 4 character / 5 meta)で絞る。返す件数はサーバが n_ctx 予算で決めるため、
+    モデルには limit を持たせない。
+    """
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    query: str = Field(min_length=1, max_length=100)
+    category: int | None = None
+
+    @classmethod
+    def from_native(cls, args: dict[str, str]) -> SearchTagsCall:
+        """native DSL の文字列 args を検証済み呼び出しへ。
+
+        native の値は全て文字列なので、strict モデルへ渡す前に `category` を明示コアーション
+        する（未知カテゴリ・非整数は絞り込み無効として None）。`query` の空/超過は
+        ValidationError となり、呼び出し側で握って検索をスキップできる。
+        """
+        return cls(
+            query=args.get("query", ""),
+            category=_coerce_tag_category(args.get("category")),
+        )
+
+
 class GenerateImageCall(BaseModel):
     """Gemma が native tool 形式で出す `generate_image` 呼び出しの検証済み表現。
 

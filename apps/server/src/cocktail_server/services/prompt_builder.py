@@ -111,6 +111,42 @@ GENERATE_IMAGE_TOOL: dict[str, Any] = {
 }
 
 
+# `tools=` に渡す search_tags のスキーマ。埋込 Gemma 4 テンプレがこれを native tool 定義として
+# 整形し、モデルは <|tool_call>call:search_tags{...}<tool_call|> を出す。返る候補は run_turn の
+# エージェントループがサーバ側で解決し、モデルへ要約を戻す（呼び出し形式は native 機構に委ねる）。
+SEARCH_TAGS_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "search_tags",
+        "description": (
+            "Look up canonical Danbooru tags or character/series names when you are unsure "
+            "of the exact spelling. Returns candidate tags to use in generate_image's "
+            "`positive`. Query in English or Japanese."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "One concept to look up, in English or Japanese and kept short "
+                        '(e.g. "cat ears", "カメラ目線", or a character name). Not a full prompt.'
+                    ),
+                },
+                "category": {
+                    "type": "integer",
+                    "description": (
+                        "Optional Danbooru category filter: 0 general, 1 artist, 3 copyright "
+                        "(series), 4 character, 5 meta. Use 4 to find a character, 3 for a series."
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+
 def build_system_prompt() -> str:
     return CONVERSATION_SYSTEM
 

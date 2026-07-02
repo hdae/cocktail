@@ -1,6 +1,7 @@
 from cocktail_server.services.prompt_builder import (
     GENERATE_IMAGE_TOOL,
     NEGATIVE_DEFAULT,
+    SEARCH_TAGS_TOOL,
     build_system_prompt,
     build_user_message,
     compose_negative,
@@ -133,6 +134,19 @@ def test_generate_image_tool_describes_aspect_sizes() -> None:
     assert "896x1152" in desc
     assert "1152x896" in desc
     assert "1024x1024" in desc
+
+
+# --- search_tags ツールスキーマ（tools= で渡す） --------------------------------
+
+
+def test_search_tags_tool_schema_shape() -> None:
+    fn = SEARCH_TAGS_TOOL["function"]
+    assert fn["name"] == "search_tags"
+    props = fn["parameters"]["properties"]
+    # query は必須、category は任意（返す件数はサーバが決めるので limit は持たせない）。
+    assert set(props) == {"query", "category"}
+    assert fn["parameters"]["required"] == ["query"]
+    assert "limit" not in props
 
 
 # --- build_user_message ----------------------------------------------------------
