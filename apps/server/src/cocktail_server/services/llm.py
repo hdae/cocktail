@@ -37,10 +37,9 @@ from cocktail_server.services.tags import TagService
 
 logger = logging.getLogger(__name__)
 
-# GGUF 推論パラメータ。max_tokens は会話 + 1 ツール分。n_ctx はシステムプロンプト
-# + 数ターンの履歴を見込んだ余裕。
+# GGUF 推論パラメータ。max_tokens は会話 + 1 ツール分。n_ctx / KV 量子化 / flash_attn は
+# Settings から注入する（16GB VRAM に長文脈を収めるため既定は 16384 + q8_0 KV + flash_attn）。
 _MAX_TOKENS: Final[int] = 1024
-_N_CTX: Final[int] = 8192
 
 # エージェントループの上限ホップ数（検索→検索→生成の最大 3 ホップ）。無限ループと n_ctx
 # 膨張を構造的に封じる。実機計測で system+tools≈2036tok / n_ctx=8192 のため 3 ホップは十分安全
@@ -274,6 +273,9 @@ class LlmService:
         *,
         hf_home: Path,
         tags: TagService,
+        n_ctx: int = 16384,
+        kv_cache_type: str = "q8_0",
+        flash_attn: bool = True,
         temperature: float = 0.7,
         top_p: float = 0.95,
         top_k: int = 40,
@@ -283,7 +285,9 @@ class LlmService:
         self._hf_home = hf_home
         self._tags = tags
         self._llm: Any = None  # llama_cpp.Llama | None
-        self._n_ctx = _N_CTX
+        self._n_ctx = n_ctx
+        self._kv_cache_type = kv_cache_type
+        self._flash_attn = flash_attn
         self._temperature = temperature
         self._top_p = top_p
         self._top_k = top_k
@@ -298,14 +302,38 @@ class LlmService:
             return
         path = self._resolve_model_path()
         _preload_cuda_runtime()
+        import llama_cpp
         from llama_cpp import Llama
 
-        logger.info("Loading GGUF LLM: %s (n_ctx=%d)", Path(path).name, self._n_ctx)
+        # KV 量子化型 → ggml 型コード。量子化 KV(特に V)は flash_attn が前提なので、
+        # 明示 False でも量子化時は強制 True にして warning で知らせる（黙って壊さない）。
+        kv_type = {
+            "f16": llama_cpp.GGML_TYPE_F16,
+            "q8_0": llama_cpp.GGML_TYPE_Q8_0,
+            "q4_0": llama_cpp.GGML_TYPE_Q4_0,
+        }[self._kv_cache_type]
+        flash_attn = self._flash_attn
+        if self._kv_cache_type != "f16" and not flash_attn:
+            logger.warning(
+                "KV cache type %s requires flash_attn; forcing it on", self._kv_cache_type
+            )
+            flash_attn = True
+
+        logger.info(
+            "Loading GGUF LLM: %s (n_ctx=%d, kv=%s, flash_attn=%s)",
+            Path(path).name,
+            self._n_ctx,
+            self._kv_cache_type,
+            flash_attn,
+        )
         t0 = perf_counter_ns()
         self._llm = Llama(
             model_path=path,
             n_gpu_layers=-1,
             n_ctx=self._n_ctx,
+            flash_attn=flash_attn,
+            type_k=kv_type,
+            type_v=kv_type,
             verbose=False,
         )
         logger.info("load llm (gguf): %.0f ms", (perf_counter_ns() - t0) / 1_000_000)
