@@ -109,6 +109,10 @@ def test_system_prompt_guides_search_tags_when_unsure() -> None:
     p = build_system_prompt()
     assert "search_tags" in p
     assert "確信" in p
+    # 実機スモークで判明した過剰修飾（「ホシノ (Blue Archive)」）を避けるため短クエリを指示。
+    assert "括弧" in p
+    # 調べただけで止めず generate_image まで進む収束指示（空ターン回避）。
+    assert "generate_image に進んで" in p
 
 
 # --- generate_image ツールスキーマ（tools= で渡す） ------------------------------

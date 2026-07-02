@@ -57,7 +57,8 @@ SEED — "new" (default, fresh composition) / "keep" (reuse the previous image's
 衣装・小物・構図の呼び名など）は、generate_image の前に search_tags で 1 語ずつ調べる。返った候補
 (tag と、当たった読み matched/ja)から適切なものを選び、その tag を positive に採用してから生成する。
 - 「1girl」「smile」「looking at viewer」のような自信のある一般タグは検索不要。直接書く。
-- 検索は必要な分だけ（多くて数回）。無駄打ちしない。検索で確信できたら generate_image に進む。
+- 検索クエリは短い1語で。キャラ名や読みだけを渡す（「ホシノ」であって「ホシノ (Blue Archive)」ではない）。括弧の補足は付けない。シリーズ名を知りたければ別に検索する。
+- 検索は必要な分だけ（多くて数回）。返った tag を選んだら、迷わず generate_image に進んで実際に画像を出す（調べただけで止めない）。
 - 見つからなければ（"no matching tags found"）、無理に当てず自分の最善の綴りで進めるか、確認する。
 
 BACK-REFERENCES
@@ -137,8 +138,10 @@ SEARCH_TAGS_TOOL: dict[str, Any] = {
                 "query": {
                     "type": "string",
                     "description": (
-                        "One concept to look up, in English or Japanese and kept short "
-                        '(e.g. "cat ears", "カメラ目線", or a character name). Not a full prompt.'
+                        "One concept to look up, in English or Japanese, as a SHORT bare term: "
+                        'a character/series name or a single tag idea (e.g. "cat ears", '
+                        '"カメラ目線", "ホシノ"). No parenthetical qualifiers — search "ホシノ", '
+                        'NOT "ホシノ (Blue Archive)"; look up the series separately if needed.'
                     ),
                 },
                 "category": {
