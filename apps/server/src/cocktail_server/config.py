@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     llm_top_p: float = Field(default=0.95, ge=0.0, le=1.0)
     llm_top_k: int = Field(default=40, ge=0)
     llm_repeat_penalty: float = Field(default=1.1, ge=0.0, le=2.0)
+    # コンテキスト長。長い会話履歴・検索往復・(将来の)画像入力トークンを見込む。16GB VRAM では
+    # fp16 KV だと 16384 で溢れるため、KV 量子化を併用して収める（下記 llm_kv_cache_type）。
+    llm_n_ctx: int = Field(default=16384, ge=512, le=131072)
+    # KV キャッシュの量子化型。f16=無量子化(VRAM 大)、q8_0=品質ほぼ無劣化で半減(既定)、
+    # q4_0=更に半減(超長文脈用)。q8_0/q4_0 は flash_attn=True が前提で、K/V は同型必須。
+    llm_kv_cache_type: Literal["f16", "q8_0", "q4_0"] = "q8_0"
+    # FlashAttention。KV 量子化(特に V)に必須。既定 True。
+    llm_flash_attn: bool = True
 
     # Danbooru タグ検索(search_tags ツール)の索引元 CSV。hdae/danbooru-tagcomplete-extra の
     # prebuilt CSV(日本語エイリアス入り)。`tags_csv` が無いとき `tags_auto_download` が真なら

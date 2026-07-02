@@ -51,3 +51,11 @@ def test_tags_csv_is_derived_from_tags_dir() -> None:
 def test_tags_auto_download_defaults_off() -> None:
     # WSL2 オフライン運用を既定にするため自動 DL は既定 OFF（事前配置前提）。
     assert Settings().tags_auto_download is False
+
+
+def test_context_length_defaults_are_long_with_kv_quant() -> None:
+    # 16GB に収めるため長文脈は KV 量子化(q8_0)+flash_attn 前提が既定。
+    s = Settings()
+    assert s.llm_n_ctx == 16384
+    assert s.llm_kv_cache_type == "q8_0"
+    assert s.llm_flash_attn is True
