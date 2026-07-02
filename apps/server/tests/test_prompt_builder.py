@@ -105,7 +105,7 @@ def test_system_prompt_explains_negative_base_is_server_prepended() -> None:
 
 
 def test_system_prompt_guides_search_tags_when_unsure() -> None:
-    # 綴りに確信が無いときだけ search_tags を使う指針が入っている（自信のあるタグは直接書く）。
+    # 綴りに確信が無いときは search_tags を使う指針が入っている（自信のあるタグは直接書く）。
     p = build_system_prompt()
     assert "search_tags" in p
     assert "確信" in p
@@ -113,6 +113,8 @@ def test_system_prompt_guides_search_tags_when_unsure() -> None:
     assert "括弧" in p
     # 調べただけで止めず generate_image まで進む収束指示（空ターン回避）。
     assert "generate_image に進んで" in p
+    # WS2(a): 不確かな要素では憶測せず「必ず」先に調べる、と自発検索を強めに促す。
+    assert "必ず search_tags" in p
 
 
 # --- generate_image ツールスキーマ（tools= で渡す） ------------------------------
